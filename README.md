@@ -6,6 +6,13 @@ CDC-style ingestion → Kafka backbone → **staged dispatch partitioned by tena
 It compares the **noisy-neighbor problem** with tenant-fair staged dispatch
 that isolates slow consumers.
 
+## Interactive concept
+
+[Tenant-Fair Streaming concept](docs/tenant-fair-streaming-concept.html) is an
+interactive visual illustration of naive processing versus tenant-fair dispatch.
+Download the HTML file and open it in a browser to explore the idea. It loads
+React and fonts from public CDNs, so an internet connection is needed.
+
 ## What it demonstrates
 
 | Architecture layer | PoC component |
