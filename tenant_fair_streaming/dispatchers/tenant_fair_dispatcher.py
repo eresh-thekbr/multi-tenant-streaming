@@ -4,11 +4,11 @@ import threading
 from collections.abc import Iterable
 
 from tenant_fair_streaming.config import DispatcherSettings
-from tenant_fair_streaming.dispatchers.base import CompletionListener, ignore_completion
+from tenant_fair_streaming.dispatchers.dispatcher_protocol import CompletionListener, ignore_completion
 from tenant_fair_streaming.dispatchers.product_lane import ProductLane
-from tenant_fair_streaming.events import ConversationEvent
-from tenant_fair_streaming.metrics import PipelineMetrics
-from tenant_fair_streaming.processing import ReliableEventProcessor
+from tenant_fair_streaming.conversation_event import ConversationEvent
+from tenant_fair_streaming.pipeline_metrics import PipelineMetrics
+from tenant_fair_streaming.reliable_event_processor import ReliableEventProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -18,15 +18,15 @@ class TenantFairDispatcher:
         self,
         processor: ReliableEventProcessor,
         products: tuple[str, ...],
-        settings: DispatcherSettings,
+        dispatcher_settings: DispatcherSettings,
         metrics: PipelineMetrics,
         on_event_completed: CompletionListener = ignore_completion,
     ) -> None:
         self._processor = processor
-        self._settings = settings
+        self._dispatcher_settings = dispatcher_settings
         self._metrics = metrics
         self._on_event_completed = on_event_completed
-        self._lanes = {product: ProductLane(product, settings.lane_capacity) for product in products}
+        self._lanes = {product: ProductLane(product, dispatcher_settings.lane_capacity) for product in products}
         self._lane_rotation = list(self._lanes.values())
         self._next_lane_index = 0
         self._unfinished_event_count = 0
@@ -34,12 +34,12 @@ class TenantFairDispatcher:
         self._state_changed = threading.Condition()
 
     def run(self, events: Iterable[ConversationEvent]) -> None:
-        workers = [
+        worker_threads = [
             threading.Thread(target=self._run_worker, name=f"tenant-fair-worker-{index}", daemon=True)
-            for index in range(self._settings.worker_count)
+            for index in range(self._dispatcher_settings.worker_count)
         ]
-        for worker in workers:
-            worker.start()
+        for worker_thread in worker_threads:
+            worker_thread.start()
         try:
             for event in events:
                 self._admit(event)
@@ -47,8 +47,8 @@ class TenantFairDispatcher:
             with self._state_changed:
                 self._intake_finished = True
                 self._state_changed.notify_all()
-            for worker in workers:
-                worker.join()
+            for worker_thread in worker_threads:
+                worker_thread.join()
 
     def _admit(self, event: ConversationEvent) -> None:
         lane = self._lanes.get(event.product)
@@ -93,6 +93,6 @@ class TenantFairDispatcher:
     def _process_safely(self, event: ConversationEvent) -> None:
         try:
             self._processor.process(event)
-        except Exception as error:  # a bug in processing must never kill a worker and stall the pipeline
+        except Exception as processing_error:  # a bug in processing must never kill a worker and stall the pipeline
             logger.exception("unexpected error while processing event %s", event.event_id)
-            self._processor.reject(event, reason=f"unexpected processing error: {error!r}")
+            self._processor.reject(event, reason=f"unexpected processing error: {processing_error!r}")

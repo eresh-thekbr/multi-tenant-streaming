@@ -1,5 +1,5 @@
 """Formats per-product reports as a plain-text table."""
-from tenant_fair_streaming.metrics import ProductReport
+from tenant_fair_streaming.pipeline_metrics import ProductReport
 
 _COLUMNS: tuple[tuple[str, str, int], ...] = (
     ("product", "product", 15),
@@ -14,16 +14,16 @@ _COLUMNS: tuple[tuple[str, str, int], ...] = (
 
 
 def format_product_table(title: str, product_reports: list[ProductReport]) -> str:
-    header = "".join(_align(label, width, is_first=index == 0) for index, (label, _, width) in enumerate(_COLUMNS))
-    rows = [
+    header_line = "".join(_align(label, width, is_first=index == 0) for index, (label, _, width) in enumerate(_COLUMNS))
+    report_lines = [
         "".join(
             _align(str(getattr(report, field_name)), width, is_first=index == 0)
             for index, (_, field_name, width) in enumerate(_COLUMNS)
         )
         for report in product_reports
     ]
-    return "\n".join([f"\n=== {title} ===", header, *rows])
+    return "\n".join([f"\n=== {title} ===", header_line, *report_lines])
 
 
-def _align(text: str, width: int, is_first: bool) -> str:
-    return text.ljust(width) if is_first else text.rjust(width)
+def _align(cell_text: str, width: int, is_first: bool) -> str:
+    return cell_text.ljust(width) if is_first else cell_text.rjust(width)

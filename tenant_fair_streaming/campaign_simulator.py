@@ -5,7 +5,7 @@ import uuid
 from collections.abc import Callable, Iterator
 
 from tenant_fair_streaming.config import PRODUCT_PROFILES, ProductProfile
-from tenant_fair_streaming.events import ConversationEvent, EventType
+from tenant_fair_streaming.conversation_event import ConversationEvent, EventType
 
 ScriptLine = tuple[EventType, str]
 
@@ -60,38 +60,38 @@ class CampaignSimulator:
 
     def generate_events(self, total_events: int) -> Iterator[ConversationEvent]:
         active_calls: dict[str, list[Iterator[ConversationEvent]]] = {
-            profile.name: [] for profile in self._product_profiles
+            product_profile.name: [] for product_profile in self._product_profiles
         }
         for _ in range(total_events):
             product = self._pick_product()
-            calls = active_calls[product]
-            if len(calls) < self._concurrent_calls_per_product:
-                calls.append(self._start_call(product))
-            call = self._random.choice(calls)
-            event = next(call, None)
+            product_calls = active_calls[product]
+            if len(product_calls) < self._concurrent_calls_per_product:
+                product_calls.append(self._start_call(product))
+            active_call = self._random.choice(product_calls)
+            event = next(active_call, None)
             if event is None:
-                calls.remove(call)
-                call = self._start_call(product)
-                calls.append(call)
-                event = next(call)
+                product_calls.remove(active_call)
+                active_call = self._start_call(product)
+                product_calls.append(active_call)
+                event = next(active_call)
             yield event
 
     def _pick_product(self) -> str:
-        weights = [profile.traffic_share for profile in self._product_profiles]
-        chosen_profile = self._random.choices(self._product_profiles, weights=weights)[0]
+        traffic_weights = [product_profile.traffic_share for product_profile in self._product_profiles]
+        chosen_profile = self._random.choices(self._product_profiles, weights=traffic_weights)[0]
         return chosen_profile.name
 
     def _start_call(self, product: str) -> Iterator[ConversationEvent]:
         account_id = f"{product}-{self._random.randint(100_000, 999_999)}"
         conversation_id = str(uuid.UUID(int=self._random.getrandbits(128)))
-        outcome = self._random.choice(list(_OUTCOMES))
-        script = _OPENING + _OUTCOMES[outcome] + _CLOSING
-        return self._play_script(product, account_id, conversation_id, script)
+        call_outcome = self._random.choice(list(_OUTCOMES))
+        call_script = _OPENING + _OUTCOMES[call_outcome] + _CLOSING
+        return self._play_script(product, account_id, conversation_id, call_script)
 
     def _play_script(
-        self, product: str, account_id: str, conversation_id: str, script: list[ScriptLine]
+        self, product: str, account_id: str, conversation_id: str, call_script: list[ScriptLine]
     ) -> Iterator[ConversationEvent]:
-        for sequence_number, (event_type, text) in enumerate(script, start=1):
+        for sequence_number, (event_type, transcript_text) in enumerate(call_script, start=1):
             yield ConversationEvent(
                 event_id=str(uuid.UUID(int=self._random.getrandbits(128))),
                 product=product,
@@ -99,6 +99,6 @@ class CampaignSimulator:
                 conversation_id=conversation_id,
                 sequence_number=sequence_number,
                 event_type=event_type,
-                text=text,
+                transcript_text=transcript_text,
                 produced_at=self._clock(),
             )

@@ -3,14 +3,14 @@ from tenant_fair_streaming.dispatchers.product_lane import ProductLane
 
 def test_events_of_one_account_are_handed_out_in_arrival_order(event_factory):
     lane = ProductLane("auto_loan", capacity=10)
-    first = event_factory(account_id="account-1", sequence_number=1)
-    second = event_factory(account_id="account-1", sequence_number=2)
-    lane.enqueue(first)
-    lane.enqueue(second)
+    first_turn = event_factory(account_id="account-1", sequence_number=1)
+    second_turn = event_factory(account_id="account-1", sequence_number=2)
+    lane.enqueue(first_turn)
+    lane.enqueue(second_turn)
 
-    assert lane.claim_next_event() == first
+    assert lane.claim_next_event() == first_turn
     lane.release_account("account-1")
-    assert lane.claim_next_event() == second
+    assert lane.claim_next_event() == second_turn
 
 
 def test_busy_account_is_not_handed_out_until_released(event_factory):

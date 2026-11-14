@@ -1,7 +1,7 @@
 """One product's bounded queue, kept as an ordered queue per account."""
 from collections import deque
 
-from tenant_fair_streaming.events import ConversationEvent
+from tenant_fair_streaming.conversation_event import ConversationEvent
 
 
 class ProductLane:

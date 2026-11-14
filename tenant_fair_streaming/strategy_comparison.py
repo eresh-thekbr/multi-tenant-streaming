@@ -2,14 +2,14 @@
 import time
 from dataclasses import dataclass, field
 
-from tenant_fair_streaming.arrivals import replay_on_schedule, schedule_campaign_burst
+from tenant_fair_streaming.arrival_schedule import replay_on_schedule, schedule_campaign_burst
 from tenant_fair_streaming.config import PRODUCT_NAMES, PRODUCT_PROFILES, ProcessingCostSettings
-from tenant_fair_streaming.events import ConversationEvent, EventType
-from tenant_fair_streaming.handlers import AccountState, AccountStateStore, CollectionStatus
-from tenant_fair_streaming.metrics import ProductReport
-from tenant_fair_streaming.pipeline import DispatchStrategy, PipelineOptions, build_pipeline
-from tenant_fair_streaming.reporting import format_product_table
-from tenant_fair_streaming.simulator import CampaignSimulator
+from tenant_fair_streaming.conversation_event import ConversationEvent, EventType
+from tenant_fair_streaming.account_state import AccountState, AccountStateStore, CollectionStatus
+from tenant_fair_streaming.pipeline_metrics import ProductReport
+from tenant_fair_streaming.pipeline_factory import DispatchStrategy, PipelineOptions, build_pipeline
+from tenant_fair_streaming.report_table import format_product_table
+from tenant_fair_streaming.campaign_simulator import CampaignSimulator
 
 
 @dataclass(frozen=True)
@@ -23,13 +23,13 @@ class StrategyResult:
 def expected_account_states(events: list[ConversationEvent]) -> dict[str, AccountState]:
     expected_states: dict[str, AccountState] = {}
     for event in events:
-        state = expected_states.setdefault(event.account_id, AccountState())
+        account_state = expected_states.setdefault(event.account_id, AccountState())
         if event.event_type is EventType.PROMISE_TO_PAY:
-            state.status = CollectionStatus.PROMISE_TO_PAY
+            account_state.status = CollectionStatus.PROMISE_TO_PAY
         elif event.event_type is EventType.DISPUTE_RAISED:
-            state.status = CollectionStatus.DISPUTED
+            account_state.status = CollectionStatus.DISPUTED
         elif event.event_type is EventType.CEASE_CONTACT_REQUESTED:
-            state.do_not_contact = True
+            account_state.do_not_contact = True
     return expected_states
 
 
@@ -55,7 +55,7 @@ def run_strategy(strategy: DispatchStrategy, scenario: DemoScenario) -> Strategy
     scheduled_events = schedule_campaign_burst(generated_events, scenario.burst_product, scenario.spread_seconds)
     started_at = time.monotonic()
     pipeline.dispatcher.run(replay_on_schedule(scheduled_events))
-    arrival_ordered_events = [scheduled.event for scheduled in scheduled_events]
+    arrival_ordered_events = [scheduled_event.event for scheduled_event in scheduled_events]
     return StrategyResult(
         strategy=strategy,
         product_reports=pipeline.metrics.report(PRODUCT_NAMES),
@@ -68,7 +68,7 @@ def run_comparison(scenario: DemoScenario) -> list[StrategyResult]:
     return [run_strategy(strategy, scenario) for strategy in DispatchStrategy]
 
 
-def format_result(result: StrategyResult) -> str:
-    table = format_product_table(result.strategy.value, result.product_reports)
-    footer = f"accounts left in the wrong state: {result.wrong_account_states}   elapsed: {result.elapsed_seconds:.1f}s"
-    return f"{table}\n{footer}"
+def format_result(strategy_result: StrategyResult) -> str:
+    product_table = format_product_table(strategy_result.strategy.value, strategy_result.product_reports)
+    summary_line = f"accounts left in the wrong state: {strategy_result.wrong_account_states}   elapsed: {strategy_result.elapsed_seconds:.1f}s"
+    return f"{product_table}\n{summary_line}"

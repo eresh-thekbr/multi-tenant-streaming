@@ -2,7 +2,7 @@
 import os
 from dataclasses import dataclass, field
 
-from tenant_fair_streaming.events import EventType
+from tenant_fair_streaming.conversation_event import EventType
 
 
 @dataclass(frozen=True)
@@ -18,7 +18,7 @@ PRODUCT_PROFILES: tuple[ProductProfile, ...] = (
     ProductProfile(name="personal_loan", traffic_share=0.10),
 )
 
-PRODUCT_NAMES: tuple[str, ...] = tuple(profile.name for profile in PRODUCT_PROFILES)
+PRODUCT_NAMES: tuple[str, ...] = tuple(product_profile.name for product_profile in PRODUCT_PROFILES)
 
 
 def _default_processing_seconds() -> dict[EventType, float]:
@@ -37,10 +37,10 @@ def _default_processing_seconds() -> dict[EventType, float]:
 @dataclass(frozen=True)
 class ProcessingCostSettings:
     seconds_by_event_type: dict[EventType, float] = field(default_factory=_default_processing_seconds)
-    scale: float = 1.0
+    cost_scale_factor: float = 1.0
 
     def seconds_for(self, event_type: EventType) -> float:
-        return self.seconds_by_event_type[event_type] * self.scale
+        return self.seconds_by_event_type[event_type] * self.cost_scale_factor
 
 
 @dataclass(frozen=True)

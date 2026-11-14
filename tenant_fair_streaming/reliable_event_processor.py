@@ -5,10 +5,10 @@ from collections.abc import Callable
 from enum import Enum
 from typing import Protocol
 
-from tenant_fair_streaming.dead_letter import DeadLetterSink
-from tenant_fair_streaming.events import ConversationEvent
-from tenant_fair_streaming.idempotency import IdempotencyStore
-from tenant_fair_streaming.metrics import PipelineMetrics
+from tenant_fair_streaming.dead_letter_sink import DeadLetterSink
+from tenant_fair_streaming.conversation_event import ConversationEvent
+from tenant_fair_streaming.idempotency_store import IdempotencyStore
+from tenant_fair_streaming.pipeline_metrics import PipelineMetrics
 
 logger = logging.getLogger(__name__)
 
@@ -44,19 +44,19 @@ class ReliableEventProcessor:
         if self._idempotency_store.was_processed(event.event_id):
             self._metrics.record_duplicate_skipped(event)
             return ProcessingOutcome.DUPLICATE_SKIPPED
-        last_error: Exception | None = None
+        last_handler_error: Exception | None = None
         for attempt in range(1, self._max_attempts + 1):
             try:
                 self._handler.handle(event)
-            except Exception as error:  # any handler failure is retried, then dead-lettered
-                last_error = error
-                logger.warning("attempt %d/%d failed for event %s: %r", attempt, self._max_attempts, event.event_id, error)
+            except Exception as handler_error:  # any handler failure is retried, then dead-lettered
+                last_handler_error = handler_error
+                logger.warning("attempt %d/%d failed for event %s: %r", attempt, self._max_attempts, event.event_id, handler_error)
                 continue
             # Mark only after success, so a failed event is not skipped when redelivered.
             self._idempotency_store.mark_processed(event.event_id)
             self._metrics.record_processed(event, completed_at=self._clock())
             return ProcessingOutcome.PROCESSED
-        self.reject(event, reason=f"failed after {self._max_attempts} attempts: {last_error!r}")
+        self.reject(event, reason=f"failed after {self._max_attempts} attempts: {last_handler_error!r}")
         return ProcessingOutcome.DEAD_LETTERED
 
     def reject(self, event: ConversationEvent, reason: str) -> None:

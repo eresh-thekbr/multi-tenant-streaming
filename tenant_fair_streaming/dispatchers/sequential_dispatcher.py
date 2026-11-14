@@ -1,9 +1,9 @@
 """Baseline: one shared consumer processing events one at a time, like a plain Kafka consumer."""
 from collections.abc import Iterable
 
-from tenant_fair_streaming.dispatchers.base import CompletionListener, ignore_completion
-from tenant_fair_streaming.events import ConversationEvent
-from tenant_fair_streaming.processing import ReliableEventProcessor
+from tenant_fair_streaming.dispatchers.dispatcher_protocol import CompletionListener, ignore_completion
+from tenant_fair_streaming.conversation_event import ConversationEvent
+from tenant_fair_streaming.reliable_event_processor import ReliableEventProcessor
 
 
 class SequentialDispatcher:

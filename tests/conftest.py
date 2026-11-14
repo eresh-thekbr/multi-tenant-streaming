@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from tenant_fair_streaming.events import ConversationEvent, EventType
+from tenant_fair_streaming.conversation_event import ConversationEvent, EventType
 
 _event_counter = itertools.count(1)
 
@@ -23,7 +23,7 @@ def make_event(
         conversation_id=conversation_id,
         sequence_number=sequence_number,
         event_type=event_type,
-        text="",
+        transcript_text="",
         produced_at=time.time(),
     )
 

@@ -27,7 +27,7 @@ class ConversationEvent:
     conversation_id: str
     sequence_number: int  # position of this event within its conversation, starting at 1
     event_type: EventType
-    text: str
+    transcript_text: str
     produced_at: float  # epoch seconds when the voice agent published the event
 
     @property

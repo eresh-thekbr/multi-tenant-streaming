@@ -2,9 +2,9 @@
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, wait
 
-from tenant_fair_streaming.dispatchers.base import CompletionListener, ignore_completion
-from tenant_fair_streaming.events import ConversationEvent
-from tenant_fair_streaming.processing import ReliableEventProcessor
+from tenant_fair_streaming.dispatchers.dispatcher_protocol import CompletionListener, ignore_completion
+from tenant_fair_streaming.conversation_event import ConversationEvent
+from tenant_fair_streaming.reliable_event_processor import ReliableEventProcessor
 
 
 class UnorderedPoolDispatcher:
@@ -20,10 +20,10 @@ class UnorderedPoolDispatcher:
 
     def run(self, events: Iterable[ConversationEvent]) -> None:
         with ThreadPoolExecutor(max_workers=self._worker_count, thread_name_prefix="pool-worker") as executor:
-            futures = [executor.submit(self._process_and_notify, event) for event in events]
-            wait(futures)
-        for future in futures:
-            future.result()  # re-raise unexpected errors instead of silently losing them
+            processing_futures = [executor.submit(self._process_and_notify, event) for event in events]
+            wait(processing_futures)
+        for processing_future in processing_futures:
+            processing_future.result()  # re-raise unexpected errors instead of silently losing them
 
     def _process_and_notify(self, event: ConversationEvent) -> None:
         self._processor.process(event)

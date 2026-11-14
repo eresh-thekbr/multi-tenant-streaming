@@ -4,7 +4,7 @@ import threading
 from collections import defaultdict
 from dataclasses import dataclass
 
-from tenant_fair_streaming.events import ConversationEvent
+from tenant_fair_streaming.conversation_event import ConversationEvent
 
 
 @dataclass(frozen=True)

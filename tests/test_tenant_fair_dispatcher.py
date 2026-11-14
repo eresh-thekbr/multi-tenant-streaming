@@ -6,15 +6,15 @@ from collections import defaultdict
 import pytest
 
 from tenant_fair_streaming.config import DispatcherSettings, ProcessingCostSettings
-from tenant_fair_streaming.demo import DemoScenario, run_strategy
-from tenant_fair_streaming.events import EventType
-from tenant_fair_streaming.pipeline import DispatchStrategy, PipelineOptions, build_pipeline
+from tenant_fair_streaming.strategy_comparison import DemoScenario, run_strategy
+from tenant_fair_streaming.conversation_event import EventType
+from tenant_fair_streaming.pipeline_factory import DispatchStrategy, PipelineOptions, build_pipeline
 
 PRODUCTS = ("credit_card", "auto_loan", "personal_loan")
 RUN_TIMEOUT_SECONDS = 10
 
 
-class SleepingHandler:
+class RandomDelayHandler:
     """Sleeps a random few milliseconds per event and records the order events finished in."""
 
     def __init__(self, seed: int = 7) -> None:
@@ -49,7 +49,7 @@ class ConcurrencyProbeHandler:
             self._in_flight_by_account[event.account_id] -= 1
 
 
-class FailingHandler:
+class SelectiveFailureHandler:
     def __init__(self, failing_event_ids: set[str]) -> None:
         self._failing_event_ids = failing_event_ids
 
@@ -58,7 +58,7 @@ class FailingHandler:
             raise ValueError("malformed payload")
 
 
-class ExplodingIdempotencyStore:
+class UnreachableIdempotencyStore:
     def was_processed(self, event_id: str) -> bool:
         raise RuntimeError("idempotency store unreachable")
 
@@ -67,10 +67,10 @@ class ExplodingIdempotencyStore:
 
 
 def run_with_timeout(dispatcher, events) -> None:
-    runner = threading.Thread(target=dispatcher.run, args=(events,), daemon=True)
-    runner.start()
-    runner.join(RUN_TIMEOUT_SECONDS)
-    assert not runner.is_alive(), "dispatcher did not finish: the pipeline is stuck"
+    dispatcher_thread = threading.Thread(target=dispatcher.run, args=(events,), daemon=True)
+    dispatcher_thread.start()
+    dispatcher_thread.join(RUN_TIMEOUT_SECONDS)
+    assert not dispatcher_thread.is_alive(), "dispatcher did not finish: the pipeline is stuck"
 
 
 def build_tenant_fair(handler, worker_count=4, lane_capacity=1_000, idempotency_store=None):
@@ -103,7 +103,7 @@ def interleaved_conversation_events(event_factory, accounts_per_product=5, event
 
 
 def test_each_account_is_processed_in_order(event_factory):
-    handler = SleepingHandler()
+    handler = RandomDelayHandler()
     pipeline = build_tenant_fair(handler)
 
     run_with_timeout(pipeline.dispatcher, interleaved_conversation_events(event_factory))
@@ -126,18 +126,18 @@ def test_one_account_is_never_processed_by_two_workers_while_different_accounts_
 def test_failing_event_is_dead_lettered_and_the_rest_keep_flowing(event_factory):
     events = interleaved_conversation_events(event_factory, events_per_account=3)
     failing_event_ids = {event.event_id for event in events[:6]}  # more failures than workers
-    pipeline = build_tenant_fair(FailingHandler(failing_event_ids), worker_count=4)
+    pipeline = build_tenant_fair(SelectiveFailureHandler(failing_event_ids), worker_count=4)
 
     run_with_timeout(pipeline.dispatcher, events)
 
-    reports = pipeline.metrics.report(PRODUCTS)
-    assert sum(report.dead_lettered for report in reports) == len(failing_event_ids)
-    assert sum(report.processed for report in reports) == len(events) - len(failing_event_ids)
+    product_reports = pipeline.metrics.report(PRODUCTS)
+    assert sum(report.dead_lettered for report in product_reports) == len(failing_event_ids)
+    assert sum(report.processed for report in product_reports) == len(events) - len(failing_event_ids)
 
 
 def test_unexpected_processing_error_does_not_kill_workers(event_factory):
     events = [event_factory(account_id=f"account-{index}") for index in range(10)]
-    pipeline = build_tenant_fair(SleepingHandler(), worker_count=2, idempotency_store=ExplodingIdempotencyStore())
+    pipeline = build_tenant_fair(RandomDelayHandler(), worker_count=2, idempotency_store=UnreachableIdempotencyStore())
 
     run_with_timeout(pipeline.dispatcher, events)
 
@@ -145,7 +145,7 @@ def test_unexpected_processing_error_does_not_kill_workers(event_factory):
 
 
 def test_event_for_unknown_product_is_dead_lettered(event_factory):
-    pipeline = build_tenant_fair(SleepingHandler())
+    pipeline = build_tenant_fair(RandomDelayHandler())
 
     run_with_timeout(pipeline.dispatcher, [event_factory(product="mortgage")])
 
@@ -154,7 +154,7 @@ def test_event_for_unknown_product_is_dead_lettered(event_factory):
 
 def test_full_lane_blocks_intake_and_still_processes_everything(event_factory):
     events = [event_factory(product="credit_card", account_id=f"account-{index}") for index in range(50)]
-    pipeline = build_tenant_fair(SleepingHandler(), worker_count=2, lane_capacity=3)
+    pipeline = build_tenant_fair(RandomDelayHandler(), worker_count=2, lane_capacity=3)
 
     run_with_timeout(pipeline.dispatcher, events)
 
@@ -168,16 +168,16 @@ def test_credit_card_burst_does_not_delay_other_products(quiet_product):
     scenario = DemoScenario(
         total_events=600,
         spread_seconds=1.0,
-        processing_costs=ProcessingCostSettings(scale=0.5),
+        processing_costs=ProcessingCostSettings(cost_scale_factor=0.5),
     )
 
-    sequential = run_strategy(DispatchStrategy.SEQUENTIAL, scenario)
-    tenant_fair = run_strategy(DispatchStrategy.TENANT_FAIR, scenario)
+    sequential_result = run_strategy(DispatchStrategy.SEQUENTIAL, scenario)
+    tenant_fair_result = run_strategy(DispatchStrategy.TENANT_FAIR, scenario)
 
-    sequential_p99 = next(r.p99_latency_ms for r in sequential.product_reports if r.product == quiet_product)
-    tenant_fair_p99 = next(r.p99_latency_ms for r in tenant_fair.product_reports if r.product == quiet_product)
+    sequential_p99 = next(report.p99_latency_ms for report in sequential_result.product_reports if report.product == quiet_product)
+    tenant_fair_p99 = next(report.p99_latency_ms for report in tenant_fair_result.product_reports if report.product == quiet_product)
     assert tenant_fair_p99 * 5 < sequential_p99
-    assert tenant_fair.wrong_account_states == 0
+    assert tenant_fair_result.wrong_account_states == 0
 
 
 def test_promise_then_dispute_leaves_account_disputed(event_factory):
@@ -189,7 +189,7 @@ def test_promise_then_dispute_leaves_account_disputed(event_factory):
         PipelineOptions(
             strategy=DispatchStrategy.TENANT_FAIR,
             products=PRODUCTS,
-            processing_costs=ProcessingCostSettings(scale=0.1),
+            processing_costs=ProcessingCostSettings(cost_scale_factor=0.1),
         )
     )
 

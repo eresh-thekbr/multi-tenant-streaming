@@ -5,7 +5,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
-from tenant_fair_streaming.events import ConversationEvent
+from tenant_fair_streaming.conversation_event import ConversationEvent
 
 
 @dataclass(frozen=True)
@@ -24,10 +24,10 @@ def schedule_campaign_burst(
     scheduled_events: list[ScheduledEvent] = []
     for product, product_events in events_by_product.items():
         for position, event in enumerate(product_events):
-            offset = 0.0 if product == burst_product else spread_seconds * position / len(product_events)
-            scheduled_events.append(ScheduledEvent(offset, event))
+            arrival_offset = 0.0 if product == burst_product else spread_seconds * position / len(product_events)
+            scheduled_events.append(ScheduledEvent(arrival_offset, event))
     # Stable sort keeps each product's original order, so every conversation stays in sequence.
-    return sorted(scheduled_events, key=lambda scheduled: scheduled.arrival_offset_seconds)
+    return sorted(scheduled_events, key=lambda scheduled_event: scheduled_event.arrival_offset_seconds)
 
 
 def replay_on_schedule(
@@ -37,9 +37,9 @@ def replay_on_schedule(
 ) -> Iterator[ConversationEvent]:
     """Yields each event at its arrival time, stamped with that time as when it was produced."""
     start_time = clock()
-    for scheduled in scheduled_events:
-        arrival_time = start_time + scheduled.arrival_offset_seconds
+    for scheduled_event in scheduled_events:
+        arrival_time = start_time + scheduled_event.arrival_offset_seconds
         wait_seconds = arrival_time - clock()
         if wait_seconds > 0:
             sleep(wait_seconds)
-        yield dataclasses.replace(scheduled.event, produced_at=arrival_time)
+        yield dataclasses.replace(scheduled_event.event, produced_at=arrival_time)

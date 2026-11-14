@@ -1,10 +1,10 @@
-from tenant_fair_streaming.dead_letter import InMemoryDeadLetterSink
-from tenant_fair_streaming.idempotency import InMemoryIdempotencyStore
-from tenant_fair_streaming.metrics import PipelineMetrics
-from tenant_fair_streaming.processing import ProcessingOutcome, ReliableEventProcessor
+from tenant_fair_streaming.dead_letter_sink import InMemoryDeadLetterSink
+from tenant_fair_streaming.idempotency_store import InMemoryIdempotencyStore
+from tenant_fair_streaming.pipeline_metrics import PipelineMetrics
+from tenant_fair_streaming.reliable_event_processor import ProcessingOutcome, ReliableEventProcessor
 
 
-class RecordingHandler:
+class FailThenSucceedHandler:
     def __init__(self, failures_before_success: int = 0) -> None:
         self.remaining_failures = failures_before_success
         self.handled_event_ids: list[str] = []
@@ -29,7 +29,7 @@ def build_processor(handler, max_attempts=3):
 
 
 def test_redelivered_event_is_applied_only_once(event_factory):
-    handler = RecordingHandler()
+    handler = FailThenSucceedHandler()
     processor, _ = build_processor(handler)
     event = event_factory()
 
@@ -41,28 +41,28 @@ def test_redelivered_event_is_applied_only_once(event_factory):
 
 
 def test_transient_failure_is_retried_until_success(event_factory):
-    handler = RecordingHandler(failures_before_success=2)
+    handler = FailThenSucceedHandler(failures_before_success=2)
     processor, dead_letter_sink = build_processor(handler, max_attempts=3)
 
-    outcome = processor.process(event_factory())
+    processing_outcome = processor.process(event_factory())
 
-    assert outcome is ProcessingOutcome.PROCESSED
+    assert processing_outcome is ProcessingOutcome.PROCESSED
     assert dead_letter_sink.dead_letters == []
 
 
 def test_event_is_dead_lettered_after_max_attempts(event_factory):
-    handler = RecordingHandler(failures_before_success=10)
+    handler = FailThenSucceedHandler(failures_before_success=10)
     processor, dead_letter_sink = build_processor(handler, max_attempts=3)
     event = event_factory()
 
-    outcome = processor.process(event)
+    processing_outcome = processor.process(event)
 
-    assert outcome is ProcessingOutcome.DEAD_LETTERED
+    assert processing_outcome is ProcessingOutcome.DEAD_LETTERED
     assert [dead_letter.event for dead_letter in dead_letter_sink.dead_letters] == [event]
 
 
 def test_failed_event_is_not_marked_processed_so_redelivery_is_retried(event_factory):
-    handler = RecordingHandler(failures_before_success=3)
+    handler = FailThenSucceedHandler(failures_before_success=3)
     processor, _ = build_processor(handler, max_attempts=3)
     event = event_factory()
 

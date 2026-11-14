@@ -270,33 +270,50 @@ make demo   # compares the three strategies on the same campaign burst
 
 | Concern | Where | How |
 |---|---|---|
-| Product isolation | `dispatchers/tenant_fair.py` | One bounded lane per product; workers pick lanes round-robin |
+| Product isolation | `dispatchers/tenant_fair_dispatcher.py` | One bounded lane per product; workers pick lanes round-robin |
 | Order per customer | `dispatchers/product_lane.py` | Events queue per account; an account is handed to only one worker at a time, different accounts run in parallel |
-| No double-apply | `processing.py`, `idempotency.py` | `event_id` is checked first and recorded only **after** success |
-| Failing events | `processing.py`, `dead_letter.py` | Bounded retries, then the dead-letter topic; a worker never dies |
+| No double-apply | `reliable_event_processor.py`, `idempotency_store.py` | `event_id` is checked first and recorded only **after** success |
+| Failing events | `reliable_event_processor.py`, `dead_letter_sink.py` | Bounded retries, then the dead-letter topic; a worker never dies |
 | No lost events | `kafka_adapter/offset_tracker.py` | Auto-commit is off; Kafka offsets are committed only up to the lowest event still in progress |
-| Backpressure | `dispatchers/tenant_fair.py` | A full lane makes intake wait, so memory stays bounded |
+| Backpressure | `dispatchers/tenant_fair_dispatcher.py` | A full lane makes intake wait, so memory stays bounded |
 
 Design patterns used: **Bulkhead** (a lane per product), **Idempotent Consumer**,
 **Dead Letter Channel**, **Strategy** (interchangeable dispatchers behind one
 interface), **Ports and Adapters** (the idempotency store, dead-letter sink and event
 source are interfaces with in-memory and Kafka implementations), and a **Composition
-Root** (`pipeline.py`) that wires them together.
+Root** (`pipeline_factory.py`) that wires them together.
 
 ## 8. Project layout
 
 ```
 tenant_fair_streaming/
-  events.py            conversation event model
-  simulator.py         simulated AI agent calls per product campaign
-  arrivals.py          arrival patterns (campaign burst vs steady traffic)
-  dispatchers/         sequential, unordered pool, tenant-fair
-  processing.py        idempotency + retries + dead-letter
-  handlers.py          compliance guard, account updates, simulated AI analysis
-  kafka_adapter/       Kafka source, publisher, dead-letter sink, offset tracking
-  pipeline.py          composition root
-  cli.py               demo / produce / consume commands
-tests/                 unit and behaviour tests
+  conversation_event.py          conversation event model
+  campaign_simulator.py          simulated AI agent calls per product campaign
+  arrival_schedule.py            arrival patterns (campaign burst vs steady traffic)
+  dispatchers/
+    dispatcher_protocol.py       common interface for all strategies
+    sequential_dispatcher.py     one shared consumer (baseline)
+    unordered_pool_dispatcher.py plain worker pool (baseline)
+    tenant_fair_dispatcher.py    lane per product, round-robin, one worker per account
+    product_lane.py              per-account ordered queues inside one product lane
+  reliable_event_processor.py    idempotency check, retries, dead-letter
+  idempotency_store.py           records which events were already applied
+  dead_letter_sink.py            where events go after all retries fail
+  collections_event_handler.py   compliance guard, account updates, simulated AI analysis
+  account_state.py               each account's collection status
+  pipeline_metrics.py            per-product latency, ordering and reliability counters
+  pipeline_factory.py            composition root
+  strategy_comparison.py         runs the in-memory demo
+  report_table.py                prints the results table
+  kafka_adapter/
+    kafka_event_source.py        consumer with manual offset commits
+    kafka_event_publisher.py     producer keyed by account
+    kafka_dead_letter_sink.py    dead-letter topic producer
+    kafka_producer_factory.py    durable, duplicate-free producer settings
+    offset_tracker.py            which offsets are safe to commit
+  config.py                      products, costs, dispatcher and Kafka settings
+  cli.py                         demo / produce / consume commands
+tests/                           unit and behaviour tests
 ```
 
 ## 9. Trade-offs and production gaps
@@ -309,7 +326,7 @@ tests/                 unit and behaviour tests
 - **In-memory state.** The idempotency store and account state are in memory; production
   would use Redis or DynamoDB (with a TTL) and the account system of record.
 - **Simulated work.** Downstream calls (LLM analysis, CRM updates) are simulated with
-  `sleep`, and the voice agent is simulated by `simulator.py`.
+  `sleep`, and the voice agent is simulated by `campaign_simulator.py`.
 - **Single consumer process.** Scaling out means more consumers in the same group; each
   one runs this dispatcher over the partitions it is assigned. Rebalance handling
   (draining and committing when a partition is revoked) is not implemented yet.

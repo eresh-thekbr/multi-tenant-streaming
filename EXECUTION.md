@@ -37,7 +37,8 @@ Expected: `27 passed` in about 5 seconds. The tests cover:
 | `test_reliable_event_processor.py` | duplicates skipped; retries; dead-letter after max attempts; failed events are not marked processed |
 | `test_product_lane.py` | per-account queueing inside one product lane |
 | `test_offset_tracker.py` | Kafka offsets are never committed past an unfinished event |
-| `test_simulator_and_arrivals.py` | simulated calls are deterministic and in sequence; burst and steady arrival patterns |
+| `test_campaign_simulator.py` | simulated calls are deterministic, in sequence and follow product shares |
+| `test_arrival_schedule.py` | credit card burst arrives at once; other products arrive steadily, in order |
 
 ## 4. Run the in-memory demo (no Kafka needed)
 

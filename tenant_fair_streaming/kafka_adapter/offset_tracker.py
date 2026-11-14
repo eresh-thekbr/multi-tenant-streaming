@@ -20,19 +20,19 @@ class OffsetTracker:
 
     def mark_completed(self, event_id: str) -> None:
         with self._lock:
-            positions = self._positions_by_event_id.get(event_id)
-            if not positions:
+            pending_positions = self._positions_by_event_id.get(event_id)
+            if not pending_positions:
                 return
-            partition, offset = positions.popleft()
-            if not positions:
+            partition, offset = pending_positions.popleft()
+            if not pending_positions:
                 del self._positions_by_event_id[event_id]
             self._in_progress_offsets[partition].discard(offset)
 
     def committable_offsets(self) -> dict[int, int]:
         # Kafka commits the offset of the next record to read, hence the +1 when nothing is in progress.
         with self._lock:
-            committable: dict[int, int] = {}
+            committable_by_partition: dict[int, int] = {}
             for partition, highest_seen in self._highest_seen_offset.items():
-                in_progress = self._in_progress_offsets[partition]
-                committable[partition] = min(in_progress) if in_progress else highest_seen + 1
-            return committable
+                in_progress_offsets = self._in_progress_offsets[partition]
+                committable_by_partition[partition] = min(in_progress_offsets) if in_progress_offsets else highest_seen + 1
+            return committable_by_partition

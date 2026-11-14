@@ -2,7 +2,7 @@
 from collections.abc import Callable, Iterable
 from typing import Protocol
 
-from tenant_fair_streaming.events import ConversationEvent
+from tenant_fair_streaming.conversation_event import ConversationEvent
 
 CompletionListener = Callable[[ConversationEvent], None]
 
