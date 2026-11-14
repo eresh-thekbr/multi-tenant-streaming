@@ -102,7 +102,86 @@ sequenceDiagram
     V->>K: call.ended
 ```
 
-## 3. Target design
+## 3. Problem statement
+
+**Context.** The bank runs one AI collections agent per loan product: credit card, auto
+loan and personal loan. Each agent calls **its own past-due customers**. All three
+publish every conversation turn to **one shared Kafka topic**, keyed by account ID. The
+topic is shared because this is one platform: the same event format and the same
+downstream services (compliance, account updates, AI analysis). Each customer's events
+must be processed in order.
+
+**What goes wrong.** The consumer processes each partition **one event at a time**. When
+one product runs a large campaign, its events fill every partition, and **urgent events
+from the other products wait behind them**.
+
+```mermaid
+flowchart LR
+    subgraph Calls["Live customer calls"]
+        CC["Credit card<br/>customers<br/>(large campaign)"]
+        AL["Auto loan<br/>customers"]
+        PL["Personal loan<br/>customers"]
+    end
+
+    VA["AI voice agent<br/>(speech to text, LLM, text to speech)"]
+
+    subgraph Kafka["Kafka topic: collections.conversation.events<br/>key = account_id"]
+        P1["Partition 1"]
+        P2["Partition 2"]
+        P3["Partition N"]
+    end
+
+    subgraph Platform["Event processing platform"]
+        D["Shared consumer<br/>one event at a time<br/>per partition"]
+    end
+
+    subgraph Consumers["Downstream actions"]
+        CG["Compliance guard<br/>stop contact on bankruptcy,<br/>attorney, cease request<br/>(urgent: seconds)"]
+        AU["Account updater<br/>promise to pay, payment,<br/>dispute flag"]
+        AI["AI call analysis<br/>summary, sentiment,<br/>next best action<br/>(slow)"]
+    end
+
+    DL["Dialer / contact system"]
+
+    CC --> VA
+    AL --> VA
+    PL --> VA
+    VA -- "conversation events" --> Kafka
+    Kafka --> D
+    D --> CG
+    D --> AU
+    D --> AI
+    CG -- "suppress customer" --> DL
+    style D fill:#ffd6d6,stroke:#c00,stroke-width:3px,color:#000
+```
+
+*Credit card campaign traffic fills the red box; auto loan and personal loan events wait
+there.*
+
+**Evidence.** Measured in this repo with `python run_poc.py --self-test`. It is a
+scaled-down test: 2,000 events, 70% from the credit card campaign.
+
+| Product | p99 wait: one shared consumer | p99 wait: each product isolated |
+|---|---|---|
+| Credit card (busy campaign) | 6.9 s | 6.8 s |
+| Auto loan | **6.9 s** | **14 ms** |
+| Personal loan | **6.7 s** | **14 ms** |
+
+The credit card campaign slows the other products down **about 500 times**. With
+isolation, only credit card events are slowed by credit card traffic.
+
+**Impact.** An auto loan customer says *"stop calling me"*. The "do not contact" flag is
+set only after the credit card backlog clears. Meanwhile, the auto loan dialer's next
+scheduled attempt **calls the customer again**, which is a compliance violation. The auto
+loan team did nothing wrong; another product's traffic caused it.
+
+**Any fix must keep:**
+
+1. Each customer's events processed in order.
+2. Each event applied only once, even if Kafka delivers it twice.
+3. Memory bounded when one product floods the platform.
+
+## 4. Target design
 
 ```mermaid
 flowchart LR
@@ -149,7 +228,7 @@ flowchart LR
 | No duplicate promises or payments | Idempotency check on `event_id`, recorded only **after** successful processing |
 | A bad event does not stop the platform | Retry a few times, then move to a dead-letter queue |
 
-## 4. What the demo will prove
+## 5. What the demo will prove
 
 | Scenario | Naive (one shared line) | Tenant-fair design |
 |---|---|---|
@@ -158,7 +237,7 @@ flowchart LR
 | Same event delivered twice | Applied twice | Applied once |
 | One event keeps failing | Pipeline stalls | Event goes to dead-letter queue, others continue |
 
-## 5. Out of scope for this proof of concept
+## 6. Out of scope for this proof of concept
 
 - The voice agent itself (speech recognition, LLM, telephony) is simulated.
 - Storage is in memory; production would use a database and Redis for idempotency keys.
