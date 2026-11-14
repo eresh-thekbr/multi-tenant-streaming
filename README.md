@@ -33,15 +33,13 @@ flow through the same pipeline, the system is **multi-tenant**.
 
 ```mermaid
 flowchart LR
-    subgraph Calls["Live customer calls"]
-        CC["Credit card<br/>customers"]
-        AL["Auto loan<br/>customers"]
-        PL["Personal loan<br/>customers"]
+    subgraph Agents["Three sources: one AI voice agent per product"]
+        CCA["Credit card agent<br/>calls past-due card customers"]
+        ALA["Auto loan agent<br/>calls past-due auto loan customers"]
+        PLA["Personal loan agent<br/>calls past-due personal loan customers"]
     end
 
-    VA["AI voice agent<br/>(speech to text, LLM, text to speech)"]
-
-    subgraph Kafka["Kafka topic: collections.conversation.events<br/>key = account_id"]
+    subgraph Kafka["ONE shared Kafka topic: collections.conversation.events<br/>key = account_id, every event carries its product"]
         P1["Partition 1"]
         P2["Partition 2"]
         P3["Partition N"]
@@ -59,10 +57,9 @@ flowchart LR
 
     DL["Dialer / contact system"]
 
-    CC --> VA
-    AL --> VA
-    PL --> VA
-    VA -- "conversation events" --> Kafka
+    CCA -- "conversation events" --> Kafka
+    ALA -- "conversation events" --> Kafka
+    PLA -- "conversation events" --> Kafka
     Kafka --> D
     D --> CG
     D --> AU
@@ -72,6 +69,22 @@ flowchart LR
 
 Note: the live conversation itself (speech in, AI reply out) does **not** go through
 Kafka. Kafka carries **what happened in the call** to the systems that must act on it.
+
+### One topic, three sources
+
+There is **one** events topic, not one per product. The three product agents are
+three independent sources writing to it. Every event carries its `product`, and the
+key is `account_id`, so all of one customer's events land in the same partition, in
+order. The consumer then separates the products again and handles them fairly (see
+section 4). The only other topic is the dead-letter topic, for events that fail every
+retry.
+
+| | One shared topic (this design) | One topic per product |
+|---|---|---|
+| Adding a product | add a new `product` value; no new topic or consumer | new topic, new consumer deployment, new monitoring |
+| Downstream services | one consumer group feeds compliance, account updates and AI analysis | every service has to subscribe to every product's topic |
+| Noisy neighbor | must be handled inside the consumer, which is what this repo does | separated in Kafka, but a service reading all topics in one consumer still mixes them |
+| When it fits | many products with the same event format and the same consumers | one product permanently dominates, or needs its own retention or SLA |
 
 ### Example: one call and the events it sends to Kafka
 
@@ -85,7 +98,7 @@ turn (a promise to pay, a dispute), it also publishes a **business event** for i
 ```mermaid
 sequenceDiagram
     participant C as Customer (Maria)
-    participant V as AI voice agent
+    participant V as Auto loan AI agent
     participant K as Kafka
     V->>K: call.started
     V->>C: "Hi Maria, this is an automated assistant from Acme Bank about your auto loan."
@@ -120,15 +133,13 @@ from the other products wait behind them**.
 
 ```mermaid
 flowchart LR
-    subgraph Calls["Live customer calls"]
-        CC["Credit card<br/>customers<br/>(large campaign)"]
-        AL["Auto loan<br/>customers"]
-        PL["Personal loan<br/>customers"]
+    subgraph Agents["Three sources: one AI voice agent per product"]
+        CCA["Credit card agent<br/>calls past-due card customers<br/>(large campaign)"]
+        ALA["Auto loan agent<br/>calls past-due auto loan customers"]
+        PLA["Personal loan agent<br/>calls past-due personal loan customers"]
     end
 
-    VA["AI voice agent<br/>(speech to text, LLM, text to speech)"]
-
-    subgraph Kafka["Kafka topic: collections.conversation.events<br/>key = account_id"]
+    subgraph Kafka["ONE shared Kafka topic: collections.conversation.events<br/>key = account_id, every event carries its product"]
         P1["Partition 1"]
         P2["Partition 2"]
         P3["Partition N"]
@@ -146,10 +157,9 @@ flowchart LR
 
     DL["Dialer / contact system"]
 
-    CC --> VA
-    AL --> VA
-    PL --> VA
-    VA -- "conversation events" --> Kafka
+    CCA -- "conversation events" --> Kafka
+    ALA -- "conversation events" --> Kafka
+    PLA -- "conversation events" --> Kafka
     Kafka --> D
     D --> CG
     D --> AU
