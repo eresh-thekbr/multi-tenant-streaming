@@ -22,10 +22,13 @@ def run_producer(arguments: argparse.Namespace) -> None:
     publisher = KafkaConversationEventPublisher(KafkaSettings())
     total_events = int(arguments.rate * arguments.seconds)
     seconds_between_events = 1.0 / arguments.rate
+    next_send_at = time.monotonic()
     try:
         for event in CampaignSimulator().generate_events(total_events):
             publisher.publish(event)
-            time.sleep(seconds_between_events)
+            # Pace against a fixed schedule so sleep overshoot does not lower the real rate.
+            next_send_at += seconds_between_events
+            time.sleep(max(0.0, next_send_at - time.monotonic()))
     finally:
         publisher.close()
     print(f"published {total_events} events to {KafkaSettings().events_topic}")
@@ -64,7 +67,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     demo_command.set_defaults(handler=run_demo)
 
     produce_command = commands.add_parser("produce", help="publish simulated call events to Kafka")
-    produce_command.add_argument("--rate", type=float, default=200, help="events per second across all products")
+    produce_command.add_argument("--rate", type=float, default=500, help="events per second across all products")
     produce_command.add_argument("--seconds", type=float, default=60)
     produce_command.set_defaults(handler=run_producer)
 

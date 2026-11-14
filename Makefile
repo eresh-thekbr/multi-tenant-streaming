@@ -25,7 +25,7 @@ kafka-down:
 	docker compose down -v
 
 produce:
-	$(PYTHON) -m tenant_fair_streaming produce --rate 200 --seconds $(RUN_SECONDS)
+	$(PYTHON) -m tenant_fair_streaming produce --rate 500 --seconds $(RUN_SECONDS)
 
 consume:
 	$(PYTHON) -m tenant_fair_streaming consume --strategy $(STRATEGY) --seconds $(RUN_SECONDS)

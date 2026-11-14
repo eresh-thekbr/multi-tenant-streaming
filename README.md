@@ -161,7 +161,7 @@ flowchart LR
 *Credit card campaign traffic fills the red box; auto loan and personal loan events wait
 there.*
 
-**Evidence.** Measured with `make demo` (section 6). It is a scaled-down test: 2,000
+**Evidence.** Measured with `make demo` (see [EXECUTION.md](EXECUTION.md)). It is a scaled-down test: 2,000
 events, 70% from the credit card campaign. Credit card events arrive as one burst; auto
 loan and personal loan events keep arriving steadily over 4 seconds.
 
@@ -252,29 +252,21 @@ flowchart LR
 | Lane full | Intake waits, nothing is lost |
 | One account | Never processed by two workers at once; other accounts run in parallel |
 
-## 6. Run it (no Kafka needed)
+## 6. How to run it
+
+Step-by-step instructions for the tests, the demo and the Kafka setup, with sample
+output and how to read it, are in **[EXECUTION.md](EXECUTION.md)**.
+
+Quick start, no Kafka needed:
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 make install
 make test   # 27 tests, about 5 seconds
-make demo   # compares three dispatch strategies on the same campaign burst
+make demo   # compares the three strategies on the same campaign burst
 ```
 
-## 7. Run it on Kafka
-
-Requires Docker.
-
-```bash
-make kafka-up                                   # single-node Kafka (KRaft) + topics
-make consume STRATEGY=tenant-fair RUN_SECONDS=90  # terminal 1: start the consumer first
-make produce RUN_SECONDS=60                     # terminal 2: publish simulated calls
-make kafka-down
-```
-
-`STRATEGY` can be `sequential`, `unordered-pool` or `tenant-fair`.
-
-## 8. Where each guarantee lives in the code
+## 7. Where each guarantee lives in the code
 
 | Concern | Where | How |
 |---|---|---|
@@ -291,7 +283,7 @@ interface), **Ports and Adapters** (the idempotency store, dead-letter sink and 
 source are interfaces with in-memory and Kafka implementations), and a **Composition
 Root** (`pipeline.py`) that wires them together.
 
-## 9. Project layout
+## 8. Project layout
 
 ```
 tenant_fair_streaming/
@@ -307,7 +299,7 @@ tenant_fair_streaming/
 tests/                 unit and behaviour tests
 ```
 
-## 10. Trade-offs and production gaps
+## 9. Trade-offs and production gaps
 
 - **Delivery is at-least-once, not exactly-once.** Offsets are committed after
   processing, so a crash replays some events; the idempotency check absorbs the replays.
