@@ -116,25 +116,11 @@ sequenceDiagram
 4. **9:03 AM** The dialer does not know about the bankruptcy yet, so it **calls John
    again**. Contacting a customer after a bankruptcy filing is a **compliance violation**.
 
-### 3.2 Picture: today (one shared line)
-
-```mermaid
-flowchart TB
-    A["Credit card campaign<br/><b>2,000 events</b>"] --> Q
-    B["John (auto loan)<br/><b>'I filed for bankruptcy'</b>"] --> Q
-    Q["ONE SHARED LINE<br/>2,000 credit card events first,<br/>John's event last"] --> W
-    W["ONE WORKER<br/>one event at a time<br/>150 ms each"] --> R
-    R["John's event processed<br/><b>after about 5 minutes</b>"] --> X
-    X["Dialer already called John again<br/><b>COMPLIANCE VIOLATION</b>"]
-    style B fill:#ffe0e0,stroke:#c00,color:#000
-    style X fill:#ffe0e0,stroke:#c00,color:#000
-```
-
 **The auto loan team did nothing wrong.** Another product line's traffic delayed its
 urgent event. This is the **noisy-neighbor problem**: in a shared system, one tenant's
 load hurts another tenant.
 
-### 3.3 Picture: what we need (one lane per product line)
+### 3.2 Picture: what we need (one lane per product line)
 
 ```mermaid
 flowchart TB
@@ -150,7 +136,7 @@ flowchart TB
     style OK fill:#e0f5e0,stroke:#080,color:#000
 ```
 
-### 3.4 Why we cannot simply add more workers to the shared line
+### 3.3 Why we cannot simply add more workers to the shared line
 
 More workers in parallel would remove the wait, but **one customer's events could
 finish in the wrong order**. Customer **Maria** says two things on one call:
@@ -164,7 +150,7 @@ finish in the wrong order**. Customer **Maria** says two things on one call:
 **Result:** the account says "promise to pay" and the bank keeps collecting a debt the
 customer disputed. Maria's events must be processed **in the order she said them**.
 
-### 3.5 Problem statement
+### 3.4 Problem statement
 
 > Several product lines share one event pipeline. The platform must guarantee:
 >
