@@ -1,5 +1,7 @@
 # Multi-Tenant Streaming System
 
+[![ci](https://github.com/eresh-thekbr/multi-tenant-streaming/actions/workflows/ci.yml/badge.svg)](https://github.com/eresh-thekbr/multi-tenant-streaming/actions/workflows/ci.yml)
+
 A Kafka consumer that lets several tenants share one event stream without slowing each
 other down, while keeping every customer's events in order and never applying an event twice.
 
