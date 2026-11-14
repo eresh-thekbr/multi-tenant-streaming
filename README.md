@@ -144,6 +144,12 @@ that came before it).
 
 ## 3. The design that solves it
 
+End-to-end path of one event, from the voice agent to the committed Kafka offset:
+
+![Event flow](docs/event-flow.svg)
+
+Inside the consumer:
+
 ```mermaid
 flowchart LR
     K["Kafka consumer<br/>(reads all partitions)"] --> R{"Route by<br/>tenant"}
