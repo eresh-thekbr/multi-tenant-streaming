@@ -1,0 +1,30 @@
+"""Baseline: a plain worker pool. Fast, but one customer's events can finish out of order."""
+from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor, wait
+
+from multi_tenant_streaming.dispatch.dispatcher_protocol import CompletionListener, ignore_completion
+from multi_tenant_streaming.domain.conversation_event import ConversationEvent
+from multi_tenant_streaming.processing.reliable_event_processor import ReliableEventProcessor
+
+
+class UnorderedPoolDispatcher:
+    def __init__(
+        self,
+        processor: ReliableEventProcessor,
+        worker_count: int,
+        on_event_completed: CompletionListener = ignore_completion,
+    ) -> None:
+        self._processor = processor
+        self._worker_count = worker_count
+        self._on_event_completed = on_event_completed
+
+    def run(self, events: Iterable[ConversationEvent]) -> None:
+        with ThreadPoolExecutor(max_workers=self._worker_count, thread_name_prefix="pool-worker") as executor:
+            processing_futures = [executor.submit(self._process_and_notify, event) for event in events]
+            wait(processing_futures)
+        for processing_future in processing_futures:
+            processing_future.result()  # re-raise unexpected errors instead of silently losing them
+
+    def _process_and_notify(self, event: ConversationEvent) -> None:
+        self._processor.process(event)
+        self._on_event_completed(event)
