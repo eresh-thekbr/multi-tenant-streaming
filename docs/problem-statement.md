@@ -89,46 +89,114 @@ sequenceDiagram
 
 ## 3. The problem
 
-### 3.1 Noisy neighbor: one product line delays another
+### 3.1 What goes wrong: a 6-minute story
 
-Monday 9am: the credit card team starts a campaign that calls 5,000 customers. Every
-call produces dozens of events, and each one goes through slow AI analysis.
+**Setup today:** all product lines share the same Kafka topic. The consumer reads
+each partition **one event at a time, in arrival order** (that is how Kafka keeps
+order). Each event takes about **150 ms**, because AI analysis runs on every event.
 
-A standard Kafka consumer processes each partition **one event at a time**, and every
-partition holds events from **all** product lines mixed together:
+Follow one auto loan customer, **John**, through a Monday morning:
+
+```mermaid
+sequenceDiagram
+    participant CC as Credit card<br/>campaign
+    participant J as John<br/>(auto loan customer)
+    participant VA as AI voice agent
+    participant K as Kafka<br/>(one shared line)
+    participant EP as Event processor<br/>(one event at a time)
+    participant DL as Dialer
+
+    Note over CC,DL: 9:00 AM - credit card team starts calling 5,000 customers
+    CC->>K: about 2,000 call events pile up in the line
+    K->>EP: processor works through credit card events, 150 ms each
+
+    Note over CC,DL: 9:01 AM - John is on a call about his auto loan
+    J->>VA: "I filed for bankruptcy. Stop calling me."
+    VA->>K: event - bankruptcy detected for John
+    Note over K: John's event is number 2,001 in the line.<br/>Wait time = 2,000 x 150 ms = about 5 minutes
+
+    Note over CC,DL: 9:03 AM - nobody has processed John's event yet
+    rect rgb(255, 214, 214)
+    DL->>J: Calls John again (no "do not contact" flag yet)
+    Note over DL,J: COMPLIANCE VIOLATION - contacting a customer after a bankruptcy filing
+    end
+
+    Note over CC,DL: 9:06 AM
+    K->>EP: finally reads John's bankruptcy event
+    EP->>DL: mark John "do not contact"
+    Note over EP,DL: Correct action, but 5 minutes too late
+```
+
+**The auto loan team did nothing wrong.** The credit card team's traffic caused the
+delay, and the auto loan team pays the price. This is the **noisy-neighbor problem**:
+in a shared system, one tenant's load hurts another tenant.
+
+### 3.2 Why it happens
+
+Three things together cause it:
+
+1. **All product lines share one line** (the same Kafka partitions).
+2. **The line is processed one event at a time** (to keep events in order).
+3. **One product line sends far more events** than the others (a calling campaign).
+
+So an urgent event from a small product line waits behind a big product line's backlog.
 
 ```mermaid
 flowchart LR
-    subgraph P3["Partition 3: processed one at a time"]
+    subgraph Today["TODAY - one shared line"]
         direction LR
-        E1["CC event"] --> E2["CC event"] --> E3["CC event"] --> E4["... 2,000 CC events ..."] --> E5["AUTO LOAN:<br/>'I filed for bankruptcy'"]
+        T1["2,000 credit card events"] --> T2["John's bankruptcy event"] --> T3["1 worker"]
     end
-    W["Single consumer<br/>~150 ms per event"] -. "busy with CC events" .-> E1
-    style E5 fill:#ffd6d6,stroke:#c00,color:#000
+    T3 -. "John waits ~5 minutes" .-> X["Too late:<br/>dialer already called again"]
+    style T2 fill:#ffd6d6,stroke:#c00,color:#000
+    style X fill:#ffd6d6,stroke:#c00,color:#000
 ```
 
-2,000 events x 150 ms = **about 5 minutes** before the bankruptcy event is even read.
-In that time the dialer still has no "do not contact" flag and **calls the customer
-again**. Contacting a customer after a bankruptcy filing is a **regulatory violation**.
+```mermaid
+flowchart LR
+    subgraph Needed["NEEDED - one lane per product line"]
+        direction LR
+        N1["Credit card lane<br/>2,000 events"] --> W1["workers"]
+        N2["Auto loan lane<br/>John's bankruptcy event"] --> W2["workers"]
+        N3["Personal loan lane"] --> W3["workers"]
+    end
+    W2 -. "John handled in milliseconds" .-> OK["Dialer stops<br/>before next call"]
+    style N2 fill:#d6f5d6,stroke:#080,color:#000
+    style OK fill:#d6f5d6,stroke:#080,color:#000
+```
 
-The auto loan team did nothing wrong. The credit card team's traffic caused the delay.
-This is the **noisy-neighbor problem**.
+### 3.3 Why "just add more workers" breaks something else
 
-### 3.2 Why "just process in parallel" is not enough
+If we simply let many workers process events in parallel, **one customer's events can
+finish out of order**. Follow customer **Maria**, who says two things on one call:
 
-Parallel processing removes the waiting, but it can **reorder one customer's events**:
+```mermaid
+sequenceDiagram
+    participant K as Kafka
+    participant W1 as Worker 1
+    participant W2 as Worker 2
+    participant DB as Maria's account
 
-| Real order | Processed out of order | Result |
-|---|---|---|
-| 1. "I'll pay $200 Friday"<br/>2. "I dispute this debt" | dispute first, then promise | Account shows **promise to pay** while the customer is **disputing**; the bank may chase a disputed debt |
+    K->>W1: event 1 - "I'll pay $200 on Friday"
+    K->>W2: event 2 - "Actually, I dispute this debt"
+    Note over W1: Worker 1 is slower (busy)
+    W2->>DB: status = DISPUTED
+    W1->>DB: status = PROMISE TO PAY (overwrites the dispute)
+    rect rgb(255, 214, 214)
+    Note over DB: Final status is WRONG.<br/>The bank keeps collecting a debt the customer disputed.
+    end
+```
 
-So each customer's (account's) events **must stay in order**.
+So we need **both**: parallel lanes so product lines do not block each other, **and**
+a guarantee that **each customer's events are processed in order**.
 
-### 3.3 Problem statement (one sentence)
+### 3.4 Problem statement
 
-> Several product lines share one event pipeline. **One product line's traffic must
-> not delay another product line's urgent events**, while **each customer's events are
-> still processed in the exact order they happened**, and **no event is applied twice**.
+> Several product lines share one event pipeline.
+>
+> 1. **Isolation:** one product line's traffic must not delay another product line's urgent events (John).
+> 2. **Ordering:** each customer's events must be processed in the exact order they happened (Maria).
+> 3. **No duplicates:** an event delivered twice must be applied only once (no double payment plans).
 
 ## 4. Target design
 
