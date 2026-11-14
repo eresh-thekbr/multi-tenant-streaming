@@ -1,4 +1,4 @@
-from tenant_fair_streaming.kafka_adapter.offset_tracker import OffsetTracker
+from multi_tenant_streaming.messaging.offset_tracker import OffsetTracker
 
 
 def test_commit_never_passes_an_unfinished_offset():

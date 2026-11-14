@@ -3,13 +3,13 @@ import time
 
 import pytest
 
-from tenant_fair_streaming.conversation_event import ConversationEvent, EventType
+from multi_tenant_streaming.domain.conversation_event import ConversationEvent, EventType
 
 _event_counter = itertools.count(1)
 
 
 def make_event(
-    product: str = "auto_loan",
+    tenant_id: str = "auto_loan",
     account_id: str = "account-1",
     conversation_id: str = "conversation-1",
     sequence_number: int = 1,
@@ -18,7 +18,7 @@ def make_event(
 ) -> ConversationEvent:
     return ConversationEvent(
         event_id=event_id or f"event-{next(_event_counter)}",
-        product=product,
+        tenant_id=tenant_id,
         account_id=account_id,
         conversation_id=conversation_id,
         sequence_number=sequence_number,

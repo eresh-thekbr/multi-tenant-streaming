@@ -5,12 +5,12 @@ from collections import defaultdict
 
 import pytest
 
-from tenant_fair_streaming.config import DispatcherSettings, ProcessingCostSettings
-from tenant_fair_streaming.strategy_comparison import DemoScenario, run_strategy
-from tenant_fair_streaming.conversation_event import EventType
-from tenant_fair_streaming.pipeline_factory import DispatchStrategy, PipelineOptions, build_pipeline
+from multi_tenant_streaming.config import DispatcherSettings, ProcessingCostSettings
+from multi_tenant_streaming.domain.conversation_event import EventType
+from multi_tenant_streaming.benchmark.strategy_comparison import BenchmarkScenario, DispatchStrategy, run_strategy
+from multi_tenant_streaming.pipeline_factory import PipelineOptions, build_pipeline
 
-PRODUCTS = ("credit_card", "auto_loan", "personal_loan")
+TENANT_IDS_UNDER_TEST = ("credit_card", "auto_loan", "personal_loan")
 RUN_TIMEOUT_SECONDS = 10
 
 
@@ -42,7 +42,8 @@ class ConcurrencyProbeHandler:
     def handle(self, event) -> None:
         with self._lock:
             self._in_flight_by_account[event.account_id] += 1
-            self.max_in_flight_per_account = max(self.max_in_flight_per_account, self._in_flight_by_account[event.account_id])
+            in_flight_for_account = self._in_flight_by_account[event.account_id]
+            self.max_in_flight_per_account = max(self.max_in_flight_per_account, in_flight_for_account)
             self.max_in_flight_total = max(self.max_in_flight_total, sum(self._in_flight_by_account.values()))
         time.sleep(0.005)
         with self._lock:
@@ -76,24 +77,23 @@ def run_with_timeout(dispatcher, events) -> None:
 def build_tenant_fair(handler, worker_count=4, lane_capacity=1_000, idempotency_store=None):
     return build_pipeline(
         PipelineOptions(
-            strategy=DispatchStrategy.TENANT_FAIR,
             dispatcher_settings=DispatcherSettings(worker_count=worker_count, lane_capacity=lane_capacity),
-            products=PRODUCTS,
+            tenant_ids=TENANT_IDS_UNDER_TEST,
             handler=handler,
             idempotency_store=idempotency_store,
         )
     )
 
 
-def interleaved_conversation_events(event_factory, accounts_per_product=5, events_per_account=20):
+def interleaved_conversation_events(event_factory, accounts_per_tenant=5, events_per_account=20):
     events = []
     for sequence_number in range(1, events_per_account + 1):
-        for product in PRODUCTS:
-            for account_index in range(accounts_per_product):
-                account_id = f"{product}-{account_index}"
+        for tenant_id in TENANT_IDS_UNDER_TEST:
+            for account_index in range(accounts_per_tenant):
+                account_id = f"{tenant_id}-{account_index}"
                 events.append(
                     event_factory(
-                        product=product,
+                        tenant_id=tenant_id,
                         account_id=account_id,
                         conversation_id=account_id,
                         sequence_number=sequence_number,
@@ -110,7 +110,7 @@ def test_each_account_is_processed_in_order(event_factory):
 
     for finished_sequences in handler.finished_sequences_by_account.values():
         assert finished_sequences == sorted(finished_sequences)
-    assert all(report.ordering_violations == 0 for report in pipeline.metrics.report(PRODUCTS))
+    assert all(report.ordering_violations == 0 for report in pipeline.metrics.report(TENANT_IDS_UNDER_TEST))
 
 
 def test_one_account_is_never_processed_by_two_workers_while_different_accounts_run_in_parallel(event_factory):
@@ -130,9 +130,9 @@ def test_failing_event_is_dead_lettered_and_the_rest_keep_flowing(event_factory)
 
     run_with_timeout(pipeline.dispatcher, events)
 
-    product_reports = pipeline.metrics.report(PRODUCTS)
-    assert sum(report.dead_lettered for report in product_reports) == len(failing_event_ids)
-    assert sum(report.processed for report in product_reports) == len(events) - len(failing_event_ids)
+    tenant_reports = pipeline.metrics.report(TENANT_IDS_UNDER_TEST)
+    assert sum(report.dead_lettered for report in tenant_reports) == len(failing_event_ids)
+    assert sum(report.processed for report in tenant_reports) == len(events) - len(failing_event_ids)
 
 
 def test_unexpected_processing_error_does_not_kill_workers(event_factory):
@@ -144,16 +144,16 @@ def test_unexpected_processing_error_does_not_kill_workers(event_factory):
     assert len(pipeline.dead_letter_sink.dead_letters) == len(events)
 
 
-def test_event_for_unknown_product_is_dead_lettered(event_factory):
+def test_event_for_unknown_tenant_is_dead_lettered(event_factory):
     pipeline = build_tenant_fair(RandomDelayHandler())
 
-    run_with_timeout(pipeline.dispatcher, [event_factory(product="mortgage")])
+    run_with_timeout(pipeline.dispatcher, [event_factory(tenant_id="mortgage")])
 
-    assert [dead_letter.event.product for dead_letter in pipeline.dead_letter_sink.dead_letters] == ["mortgage"]
+    assert [dead_letter.event.tenant_id for dead_letter in pipeline.dead_letter_sink.dead_letters] == ["mortgage"]
 
 
 def test_full_lane_blocks_intake_and_still_processes_everything(event_factory):
-    events = [event_factory(product="credit_card", account_id=f"account-{index}") for index in range(50)]
+    events = [event_factory(tenant_id="credit_card", account_id=f"account-{index}") for index in range(50)]
     pipeline = build_tenant_fair(RandomDelayHandler(), worker_count=2, lane_capacity=3)
 
     run_with_timeout(pipeline.dispatcher, events)
@@ -163,9 +163,13 @@ def test_full_lane_blocks_intake_and_still_processes_everything(event_factory):
     assert credit_card_report.processed == len(events)
 
 
-@pytest.mark.parametrize("quiet_product", ["auto_loan", "personal_loan"])
-def test_credit_card_burst_does_not_delay_other_products(quiet_product):
-    scenario = DemoScenario(
+def p99_for_tenant(strategy_result, tenant_id):
+    return next(report.p99_latency_ms for report in strategy_result.tenant_reports if report.tenant_id == tenant_id)
+
+
+@pytest.mark.parametrize("quiet_tenant", ["auto_loan", "personal_loan"])
+def test_credit_card_burst_does_not_delay_other_tenants(quiet_tenant):
+    scenario = BenchmarkScenario(
         total_events=600,
         spread_seconds=1.0,
         processing_costs=ProcessingCostSettings(cost_scale_factor=0.5),
@@ -174,8 +178,8 @@ def test_credit_card_burst_does_not_delay_other_products(quiet_product):
     sequential_result = run_strategy(DispatchStrategy.SEQUENTIAL, scenario)
     tenant_fair_result = run_strategy(DispatchStrategy.TENANT_FAIR, scenario)
 
-    sequential_p99 = next(report.p99_latency_ms for report in sequential_result.product_reports if report.product == quiet_product)
-    tenant_fair_p99 = next(report.p99_latency_ms for report in tenant_fair_result.product_reports if report.product == quiet_product)
+    sequential_p99 = p99_for_tenant(sequential_result, quiet_tenant)
+    tenant_fair_p99 = p99_for_tenant(tenant_fair_result, quiet_tenant)
     assert tenant_fair_p99 * 5 < sequential_p99
     assert tenant_fair_result.wrong_account_states == 0
 
@@ -187,8 +191,7 @@ def test_promise_then_dispute_leaves_account_disputed(event_factory):
     ]
     pipeline = build_pipeline(
         PipelineOptions(
-            strategy=DispatchStrategy.TENANT_FAIR,
-            products=PRODUCTS,
+            tenant_ids=TENANT_IDS_UNDER_TEST,
             processing_costs=ProcessingCostSettings(cost_scale_factor=0.1),
         )
     )

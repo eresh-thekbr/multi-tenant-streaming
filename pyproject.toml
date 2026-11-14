@@ -1,9 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "tenant-fair-streaming"
-version = "0.2.0"
-description = "Tenant-fair Kafka event processing for an AI debt-recovery voice agent platform"
+name = "multi-tenant-streaming"
+version = "1.0.0"
+description = "Kafka consumer that isolates tenants from each other while keeping each account's events in order"
 requires-python = ">=3.10"
 dependencies = ["kafka-python==2.3.0"]
+
+[project.optional-dependencies]
+dev = ["pytest==7.4.0"]
+
+[project.scripts]
+multi-tenant-streaming = "multi_tenant_streaming.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["multi_tenant_streaming*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

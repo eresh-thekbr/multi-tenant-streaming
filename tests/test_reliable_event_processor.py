@@ -1,7 +1,7 @@
-from tenant_fair_streaming.dead_letter_sink import InMemoryDeadLetterSink
-from tenant_fair_streaming.idempotency_store import InMemoryIdempotencyStore
-from tenant_fair_streaming.pipeline_metrics import PipelineMetrics
-from tenant_fair_streaming.reliable_event_processor import ProcessingOutcome, ReliableEventProcessor
+from multi_tenant_streaming.processing.dead_letter_sink import InMemoryDeadLetterSink
+from multi_tenant_streaming.processing.idempotency_store import InMemoryIdempotencyStore
+from multi_tenant_streaming.observability.pipeline_metrics import PipelineMetrics
+from multi_tenant_streaming.processing.reliable_event_processor import ProcessingOutcome, ReliableEventProcessor
 
 
 class FailThenSucceedHandler:
