@@ -1,0 +1,6 @@
+services:
+  kafka:
+    image: apache/kafka:3.8.0  # single-node KRaft broker, no ZooKeeper
+    container_name: tenant-fair-kafka
+    ports:
+      - "9092:9092"

@@ -1,0 +1,10 @@
+[project]
+name = "tenant-fair-streaming"
+version = "0.2.0"
+description = "Tenant-fair Kafka event processing for an AI debt-recovery voice agent platform"
+requires-python = ">=3.10"
+dependencies = ["kafka-python==2.3.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

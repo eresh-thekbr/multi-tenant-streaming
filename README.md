@@ -1,113 +1,109 @@
-# multi-tenant-streaming — tenant-fair staged dispatch
+# tenant-fair-streaming
 
-A proof of concept of a multi-tenant event-driven streaming architecture:
-CDC-style ingestion → Kafka backbone → **staged dispatch partitioned by tenant**
-(the SQS `MessageGroupID` pattern) → real-time knowledge-graph updates.
-It compares the **noisy-neighbor problem** with tenant-fair staged dispatch
-that isolates slow consumers.
+Tenant-fair Kafka event processing for a bank's **AI debt-recovery voice agents**.
 
-## Interactive concept
+Each loan product (credit card, auto loan, personal loan) runs its own AI agent that calls
+its own past-due customers. Every conversation turn goes to **one shared Kafka topic**,
+because all products share one platform for compliance, account updates and AI analysis.
 
-[Tenant-Fair Streaming concept](docs/tenant-fair-streaming-concept.html) is an
-interactive visual illustration of naive processing versus tenant-fair dispatch.
-Download the HTML file and open it in a browser to explore the idea. It loads
-React and fonts from public CDNs, so an internet connection is needed.
+**The problem:** when one product runs a large campaign, its events fill the shared
+consumer, and urgent events from the other products (for example *"stop calling me"*)
+wait behind them. This repo shows a dispatcher that isolates products while keeping
+each customer's events in order.
 
-## What it demonstrates
+Full problem statement and diagrams: [docs/problem-statement.md](docs/problem-statement.md)
 
-| Architecture layer | PoC component |
-|---|---|
-| 1. CDC ingestion (Mongo change streams / Debezium) | `simulator.py` — generates `ticket.created`, `conversation.message_added`, … events across 3 tenants, keyed by `tenant_id` |
-| 2. Kafka backbone + SQS staging, per-tenant order | `dispatcher.py` — one bounded FIFO per tenant + fair round-robin worker pool; a tenant is processed by at most one worker at a time → strict per-tenant order, tenants never block each other |
-| 3. Real-time knowledge-graph / vector updates | `processors.py` — applies every event to an in-memory knowledge graph; idempotent consumer dedupe on `event_id` (at-least-once) |
-| 4. Reactive workflows / event-driven actions | Extension point (see `architecture_notes.md`) |
+## Architecture
 
-The money demo: **mode A (naive)** processes events single-threaded in poll
-order — the noisy tenant (`acme`: 70% of volume, slow downstream) blocks
-everyone (head-of-line blocking). **Mode B (staged)** isolates it: quiet
-tenants keep low latency while per-tenant ordering stays strict.
+```mermaid
+flowchart LR
+    A["AI voice agents<br/>credit card, auto loan,<br/>personal loan"] -- "conversation events<br/>key = account_id" --> K["Kafka topic<br/>collections.conversation.events"]
+    K --> D["Tenant-fair dispatcher<br/>lane per product,<br/>in order per account"]
+    D --> P["Reliable processor<br/>idempotency, retries,<br/>dead-letter queue"]
+    P --> H["Handlers<br/>compliance guard,<br/>account updates,<br/>AI analysis"]
+    P -. "failed after retries" .-> DLQ["Dead-letter topic"]
+```
 
-## Prerequisites (Mac)
-
-- Kafka running locally on `localhost:9092` (you have it installed).
-  With Homebrew: `brew install kafka`, then start ZooKeeper + Kafka
-  (or KRaft mode), per the formulae docs.
-- Python 3.10+.
-
-## Setup
+## Quick start (no Kafka needed)
 
 ```bash
-cd multi-tenant-streaming
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-
-# create the topic (6 partitions so tenant keys spread)
-/opt/homebrew/opt/kafka/bin/kafka-topics.sh --create \
-  --topic multi-tenant.ops.events --bootstrap-server localhost:9092 \
-  --partitions 6 --replication-factor 1
+make install
+make test   # 27 tests, about 5 seconds
+make demo   # compares three dispatch strategies on the same campaign burst
 ```
 
-## Run it (no Kafka needed first)
+`make demo` output, abbreviated (2,000 events; credit card arrives as one burst, the
+other products arrive steadily):
+
+| Strategy | Auto loan p99 | Personal loan p99 | Ordering errors |
+|---|---|---|---|
+| Sequential (one shared consumer) | 4.7 s | 4.7 s | 0 |
+| Unordered pool ("just add workers") | 1.1 s | 1.2 s | 126 |
+| **Tenant-fair** | **13 ms** | **13 ms** | **0** |
+
+- **Sequential** keeps order, but every product waits behind the credit card burst.
+- **Unordered pool** is faster, but processes customers' events out of order.
+- **Tenant-fair** gets both: other products are not delayed, and order is kept.
+
+## Run on Kafka
+
+Requires Docker.
 
 ```bash
-python run_poc.py --self-test
+make kafka-up                                   # single-node Kafka (KRaft) + topics
+make consume STRATEGY=tenant-fair RUN_SECONDS=90  # terminal 1: start the consumer first
+make produce RUN_SECONDS=60                     # terminal 2: publish simulated calls
+make kafka-down
 ```
 
-Runs 2,000 in-memory events through both modes with assertions:
-per-tenant order must hold in staged mode, and quiet-tenant p99 must beat
-naive. This validates the dispatch logic end to end.
+`STRATEGY` can be `sequential`, `unordered-pool` or `tenant-fair`.
 
-## Run it on real Kafka (3 terminals)
+## How it works
 
-```bash
-# T1 — event simulator (~40 events/sec, 2 min)
-python simulator.py --rate 40 --seconds 120
+| Concern | Where | How |
+|---|---|---|
+| Product isolation | `dispatchers/tenant_fair.py` | One bounded lane per product; workers pick lanes round-robin |
+| Order per customer | `dispatchers/product_lane.py` | Events queue per account; an account is handed to only one worker at a time, different accounts run in parallel |
+| No double-apply | `processing.py`, `idempotency.py` | `event_id` is checked first and recorded only **after** success |
+| Failing events | `processing.py`, `dead_letter.py` | Bounded retries, then the dead-letter topic; a worker never dies |
+| No lost events | `kafka_adapter/offset_tracker.py` | Auto-commit is off; Kafka offsets are committed only up to the lowest event still in progress |
+| Backpressure | `dispatchers/tenant_fair.py` | A full lane makes intake wait, so memory stays bounded |
 
-# T2 — naive baseline (its own consumer group, reads everything)
-python run_poc.py --mode naive --seconds 45
+Design patterns used: **Bulkhead** (a lane per product), **Idempotent Consumer**,
+**Dead Letter Channel**, **Strategy** (interchangeable dispatchers behind one
+interface), **Ports and Adapters** (the idempotency store, dead-letter sink and event
+source are interfaces with in-memory and Kafka implementations), and a **Composition
+Root** (`pipeline.py`) that wires them together.
 
-# T3 — staged dispatch (after T2 finishes)
-python run_poc.py --mode staged --seconds 45
+## Project layout
+
+```
+tenant_fair_streaming/
+  events.py            conversation event model
+  simulator.py         simulated AI agent calls per product campaign
+  arrivals.py          arrival patterns (campaign burst vs steady traffic)
+  dispatchers/         sequential, unordered pool, tenant-fair
+  processing.py        idempotency + retries + dead-letter
+  handlers.py          compliance guard, account updates, simulated AI analysis
+  kafka_adapter/       Kafka source, publisher, dead-letter sink, offset tracking
+  pipeline.py          composition root
+  cli.py               demo / produce / consume commands
+tests/                 unit and behaviour tests
+docs/                  problem statement and design
 ```
 
-Compare the printed tables: in naive mode the quiet tenants'
-p99 explodes behind `acme`; in staged mode their p99 stays flat while
-`order_viol` stays 0 for every tenant.
+## Trade-offs and production gaps
 
-## What to look at
-
-- `dispatcher.py::_next_tenant` — the fair scheduler: round-robin across
-  tenants, one worker per tenant at a time (the per-tenant-order guarantee).
-- `dispatcher.py::submit` — bounded queues: when a tenant's queue is full,
-  the submitter blocks → backpressure propagates to the Kafka poll loop
-  (watch consumer lag grow).
-- `processors.py::process_event` — at-least-once + idempotent dedupe on
-  `event_id`; the `slow` path simulates the slow downstream that creates
-  the noisy-neighbor effect.
-
-## Design notes (earned while building)
-
-Two bugs caught by the self-test:
-
-1. **Non-blocking per-tenant intake.** The first version blocked the submit
-   loop when a tenant's staged queue filled — which reintroduced
-   head-of-line blocking at intake: one hot tenant stalled submissions for
-   everyone. The fix mirrors Kafka's `consumer.pause(partition)`: intake
-   never blocks on a full tenant queue; overflow parks in a per-tenant
-   pending buffer (the analog of consumer lag growing on a paused
-   partition) while other tenants keep flowing.
-
-2. **Lock-free backpressure accounting.** Counting backpressure events under
-   the shared metrics lock let the tight intake loop starve the workers
-   (CPython locks aren't fair). Since only the intake thread writes that
-   counter, it doesn't take the lock at all.
-
-## Scope and simplifications
-
-- Single-node Kafka, in-memory per-tenant queues instead of SQS.
-- The "CDC" is a simulator; prod would be Debezium / Mongo change streams.
-- Processing cost is simulated with `sleep`, not real I/O.
-- Dedupe set is in-memory; prod would be Redis/DynamoDB with TTL.
-- Exactly-once would need a transactional producer + `read_committed`
-  consumer; this PoC is at-least-once + idempotent (which is what most
-  real systems actually run).
+- **Delivery is at-least-once, not exactly-once.** Offsets are committed after
+  processing, so a crash replays some events; the idempotency check absorbs the replays.
+- **A full lane pauses all intake.** Kafka partitions mix products, so the consumer
+  cannot pause only one product. Lanes are sized well above normal bursts. If one
+  product keeps saturating its lane, give it its own topic.
+- **In-memory state.** The idempotency store and account state are in memory; production
+  would use Redis or DynamoDB (with a TTL) and the account system of record.
+- **Simulated work.** Downstream calls (LLM analysis, CRM updates) are simulated with
+  `sleep`, and the voice agent is simulated by `simulator.py`.
+- **Single consumer process.** Scaling out means more consumers in the same group; each
+  one runs this dispatcher over the partitions it is assigned. Rebalance handling
+  (draining and committing when a partition is revoked) is not implemented yet.

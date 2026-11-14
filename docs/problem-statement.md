@@ -158,17 +158,18 @@ flowchart LR
 *Credit card campaign traffic fills the red box; auto loan and personal loan events wait
 there.*
 
-**Evidence.** Measured in this repo with `python run_poc.py --self-test`. It is a
-scaled-down test: 2,000 events, 70% from the credit card campaign.
+**Evidence.** Measured in this repo with `make demo`. It is a scaled-down test: 2,000
+events, 70% from the credit card campaign. Credit card events arrive as one burst; auto
+loan and personal loan events keep arriving steadily over 4 seconds.
 
-| Product | p99 wait: one shared consumer | p99 wait: each product isolated |
+| Product | p99 wait: one shared consumer | p99 wait: tenant-fair dispatch |
 |---|---|---|
-| Credit card (busy campaign) | 6.9 s | 6.8 s |
-| Auto loan | **6.9 s** | **14 ms** |
-| Personal loan | **6.7 s** | **14 ms** |
+| Credit card (busy campaign) | 4.7 s | 1.3 s |
+| Auto loan | **4.7 s** | **13 ms** |
+| Personal loan | **4.7 s** | **13 ms** |
 
-The credit card campaign slows the other products down **about 500 times**. With
-isolation, only credit card events are slowed by credit card traffic.
+The credit card campaign slows the other products down **about 350 times**. With
+tenant-fair dispatch, only credit card events wait for credit card traffic.
 
 **Impact.** An auto loan customer says *"stop calling me"*. The "do not contact" flag is
 set only after the credit card backlog clears. Meanwhile, the auto loan dialer's next
@@ -217,25 +218,36 @@ flowchart LR
     W4 --> ID
     ID --> H["Handlers:<br/>compliance guard,<br/>account updater,<br/>AI analysis"]
 
-    Q1 -. "lane full: pause only<br/>credit card intake" .-> K
+    Q1 -. "lane full: intake waits<br/>(backpressure)" .-> K
 ```
 
 | Requirement | How the design meets it |
 |---|---|
 | One product line cannot delay another | Separate lane per product line + round-robin scheduler |
 | Each customer's events stay in order | Only one worker handles a given account at a time |
-| A hot product line cannot exhaust memory | Bounded lane; when full, only that product line's intake pauses (backpressure) |
+| A hot product line cannot exhaust memory | Bounded lane; when it is full, intake waits until it drains (backpressure) |
 | No duplicate promises or payments | Idempotency check on `event_id`, recorded only **after** successful processing |
 | A bad event does not stop the platform | Retry a few times, then move to a dead-letter queue |
 
-## 5. What the demo will prove
+## 5. What the demo and tests prove
 
-| Scenario | Naive (one shared line) | Tenant-fair design |
-|---|---|---|
-| Credit card campaign burst | Auto loan bankruptcy event waits minutes | Handled in milliseconds |
-| Customer events out of order | Not applicable (single thread) | Zero ordering violations |
-| Same event delivered twice | Applied twice | Applied once |
-| One event keeps failing | Pipeline stalls | Event goes to dead-letter queue, others continue |
+`make demo` runs the same burst through three strategies:
+
+| Strategy | Auto loan p99 | Personal loan p99 | Ordering errors |
+|---|---|---|---|
+| Sequential (one shared consumer) | 4.7 s | 4.7 s | 0 |
+| Unordered pool ("just add workers") | 1.1 s | 1.2 s | **126** |
+| **Tenant-fair** | **13 ms** | **13 ms** | **0** |
+
+`make test` checks the remaining guarantees:
+
+| Scenario | Result |
+|---|---|
+| Same event delivered twice | Applied once (idempotency check) |
+| One event keeps failing | Retried, then dead-lettered; the other events keep flowing |
+| Bug inside processing | Worker survives; event is dead-lettered |
+| Lane full | Intake waits, nothing is lost |
+| One account | Never processed by two workers at once; other accounts run in parallel |
 
 ## 6. Out of scope for this proof of concept
 
