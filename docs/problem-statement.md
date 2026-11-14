@@ -69,134 +69,100 @@ flowchart LR
 Note: the live conversation itself (speech in, AI reply out) does **not** go through
 Kafka. Kafka carries **what happened in the call** to the systems that must act on it.
 
-### Example events from one call
+### Example: one call and the events it sends to Kafka
+
+The agent and the customer talk normally. After each important moment, the agent
+also publishes an event to Kafka (right-hand column).
 
 ```mermaid
 sequenceDiagram
     participant C as Customer
     participant V as AI voice agent
     participant K as Kafka
-    C->>V: answers the call
+    V->>C: "Hi Maria, this is an automated assistant from Acme Bank about your auto loan."
     V->>K: call.started
+    V->>C: "This is an attempt to collect a debt..." (required disclosure)
     V->>K: disclosure.given
-    C->>V: "I can pay $200 on Friday"
-    V->>K: utterance.transcribed
-    V->>K: promise_to_pay.created
-    C->>V: "Actually, I dispute this debt"
-    V->>K: intent.detected (dispute)
+    V->>C: "Your payment of $450 is 30 days past due. Can you make a payment?"
+    C->>V: "I can pay $200 on Friday."
+    V->>C: "Thank you. I have noted $200 on Friday."
+    V->>K: promise_to_pay.created ($200, Friday)
+    C->>V: "Actually, I dispute this debt."
+    V->>C: "Understood. I have recorded your dispute and will stop collection on it."
+    V->>K: dispute.raised
+    V->>C: "Thank you, goodbye."
     V->>K: call.ended
 ```
 
 ## 3. The problem
 
-### 3.1 What goes wrong: a 6-minute story
+### 3.1 The story in four steps
 
-**Setup today:** all product lines share the same Kafka topic. The consumer reads
-each partition **one event at a time, in arrival order** (that is how Kafka keeps
-order). Each event takes about **150 ms**, because AI analysis runs on every event.
+1. **9:00 AM** The credit card team starts a campaign that calls 5,000 customers.
+   Their calls send **thousands of events** into Kafka.
+2. **9:01 AM** On a different call, auto loan customer **John** says:
+   *"I filed for bankruptcy. Stop calling me."* The agent sends that event to Kafka.
+3. Kafka hands events to the processor **one at a time, in arrival order**.
+   John's event is **behind 2,000 credit card events**. At 150 ms each, it waits
+   **about 5 minutes**.
+4. **9:03 AM** The dialer does not know about the bankruptcy yet, so it **calls John
+   again**. Contacting a customer after a bankruptcy filing is a **compliance violation**.
 
-Follow one auto loan customer, **John**, through a Monday morning:
-
-```mermaid
-sequenceDiagram
-    participant CC as Credit card<br/>campaign
-    participant J as John<br/>(auto loan customer)
-    participant VA as AI voice agent
-    participant K as Kafka<br/>(one shared line)
-    participant EP as Event processor<br/>(one event at a time)
-    participant DL as Dialer
-
-    Note over CC,DL: 9:00 AM - credit card team starts calling 5,000 customers
-    CC->>K: about 2,000 call events pile up in the line
-    K->>EP: processor works through credit card events, 150 ms each
-
-    Note over CC,DL: 9:01 AM - John is on a call about his auto loan
-    J->>VA: "I filed for bankruptcy. Stop calling me."
-    VA->>K: event - bankruptcy detected for John
-    Note over K: John's event is number 2,001 in the line.<br/>Wait time = 2,000 x 150 ms = about 5 minutes
-
-    Note over CC,DL: 9:03 AM - nobody has processed John's event yet
-    rect rgb(255, 214, 214)
-    DL->>J: Calls John again (no "do not contact" flag yet)
-    Note over DL,J: COMPLIANCE VIOLATION - contacting a customer after a bankruptcy filing
-    end
-
-    Note over CC,DL: 9:06 AM
-    K->>EP: finally reads John's bankruptcy event
-    EP->>DL: mark John "do not contact"
-    Note over EP,DL: Correct action, but 5 minutes too late
-```
-
-**The auto loan team did nothing wrong.** The credit card team's traffic caused the
-delay, and the auto loan team pays the price. This is the **noisy-neighbor problem**:
-in a shared system, one tenant's load hurts another tenant.
-
-### 3.2 Why it happens
-
-Three things together cause it:
-
-1. **All product lines share one line** (the same Kafka partitions).
-2. **The line is processed one event at a time** (to keep events in order).
-3. **One product line sends far more events** than the others (a calling campaign).
-
-So an urgent event from a small product line waits behind a big product line's backlog.
+### 3.2 Picture: today (one shared line)
 
 ```mermaid
-flowchart LR
-    subgraph Today["TODAY - one shared line"]
-        direction LR
-        T1["2,000 credit card events"] --> T2["John's bankruptcy event"] --> T3["1 worker"]
-    end
-    T3 -. "John waits ~5 minutes" .-> X["Too late:<br/>dialer already called again"]
-    style T2 fill:#ffd6d6,stroke:#c00,color:#000
-    style X fill:#ffd6d6,stroke:#c00,color:#000
+flowchart TB
+    A["Credit card campaign<br/><b>2,000 events</b>"] --> Q
+    B["John (auto loan)<br/><b>'I filed for bankruptcy'</b>"] --> Q
+    Q["ONE SHARED LINE<br/>2,000 credit card events first,<br/>John's event last"] --> W
+    W["ONE WORKER<br/>one event at a time<br/>150 ms each"] --> R
+    R["John's event processed<br/><b>after about 5 minutes</b>"] --> X
+    X["Dialer already called John again<br/><b>COMPLIANCE VIOLATION</b>"]
+    style B fill:#ffe0e0,stroke:#c00,color:#000
+    style X fill:#ffe0e0,stroke:#c00,color:#000
 ```
+
+**The auto loan team did nothing wrong.** Another product line's traffic delayed its
+urgent event. This is the **noisy-neighbor problem**: in a shared system, one tenant's
+load hurts another tenant.
+
+### 3.3 Picture: what we need (one lane per product line)
 
 ```mermaid
-flowchart LR
-    subgraph Needed["NEEDED - one lane per product line"]
-        direction LR
-        N1["Credit card lane<br/>2,000 events"] --> W1["workers"]
-        N2["Auto loan lane<br/>John's bankruptcy event"] --> W2["workers"]
-        N3["Personal loan lane"] --> W3["workers"]
-    end
-    W2 -. "John handled in milliseconds" .-> OK["Dialer stops<br/>before next call"]
-    style N2 fill:#d6f5d6,stroke:#080,color:#000
-    style OK fill:#d6f5d6,stroke:#080,color:#000
+flowchart TB
+    K["Kafka"] --> CCL & ALL & PLL
+    CCL["Credit card lane<br/>2,000 events<br/>(busy, but only slows itself)"]
+    ALL["Auto loan lane<br/>John's event<br/>(nothing in front of it)"]
+    PLL["Personal loan lane"]
+    CCL --> W1["Worker"]
+    ALL --> W2["Worker"]
+    PLL --> W3["Worker"]
+    W2 --> OK["John's event processed <b>in milliseconds</b><br/>Dialer marks John 'do not contact'<br/><b>No second call</b>"]
+    style ALL fill:#e0f5e0,stroke:#080,color:#000
+    style OK fill:#e0f5e0,stroke:#080,color:#000
 ```
 
-### 3.3 Why "just add more workers" breaks something else
+### 3.4 Why we cannot simply add more workers to the shared line
 
-If we simply let many workers process events in parallel, **one customer's events can
-finish out of order**. Follow customer **Maria**, who says two things on one call:
+More workers in parallel would remove the wait, but **one customer's events could
+finish in the wrong order**. Customer **Maria** says two things on one call:
 
-```mermaid
-sequenceDiagram
-    participant K as Kafka
-    participant W1 as Worker 1
-    participant W2 as Worker 2
-    participant DB as Maria's account
+| Step | What Maria said | Event | With random parallel workers |
+|---|---|---|---|
+| 1 | "I can pay $200 on Friday." | `promise_to_pay.created` | Worker 1 picks it up but is slow |
+| 2 | "Actually, I dispute this debt." | `dispute.raised` | Worker 2 finishes first: account = **DISPUTED** |
+| 3 | | | Worker 1 finishes last: account = **PROMISE TO PAY** (overwrites the dispute) |
 
-    K->>W1: event 1 - "I'll pay $200 on Friday"
-    K->>W2: event 2 - "Actually, I dispute this debt"
-    Note over W1: Worker 1 is slower (busy)
-    W2->>DB: status = DISPUTED
-    W1->>DB: status = PROMISE TO PAY (overwrites the dispute)
-    rect rgb(255, 214, 214)
-    Note over DB: Final status is WRONG.<br/>The bank keeps collecting a debt the customer disputed.
-    end
-```
+**Result:** the account says "promise to pay" and the bank keeps collecting a debt the
+customer disputed. Maria's events must be processed **in the order she said them**.
 
-So we need **both**: parallel lanes so product lines do not block each other, **and**
-a guarantee that **each customer's events are processed in order**.
+### 3.5 Problem statement
 
-### 3.4 Problem statement
-
-> Several product lines share one event pipeline.
+> Several product lines share one event pipeline. The platform must guarantee:
 >
-> 1. **Isolation:** one product line's traffic must not delay another product line's urgent events (John).
-> 2. **Ordering:** each customer's events must be processed in the exact order they happened (Maria).
-> 3. **No duplicates:** an event delivered twice must be applied only once (no double payment plans).
+> 1. **Isolation:** one product line's traffic never delays another product line's urgent events (John).
+> 2. **Ordering:** each customer's events are processed in the order they happened (Maria).
+> 3. **No duplicates:** an event delivered twice is applied only once (no double payment plans).
 
 ## 4. Target design
 
