@@ -6,7 +6,8 @@
 ## 1. Context
 
 A US bank uses an **AI voice agent** to talk to customers about overdue balances
-(debt recovery / collections). One shared platform serves several **product lines**:
+(debt recovery / collections). The agent only calls customers whose accounts are
+**past due** (in collections); it never contacts customers who are current. One shared platform serves several **product lines**:
 
 | Product line (tenant) | Typical traffic |
 |---|---|
@@ -71,26 +72,33 @@ Kafka. Kafka carries **what happened in the call** to the systems that must act 
 
 ### Example: one call and the events it sends to Kafka
 
-The agent and the customer talk normally. After each important moment, the agent
-also publishes an event to Kafka (right-hand column).
+Maria is called **only because her auto loan payment is 30 days past due** (she is in
+collections). Customers who are not in collections are never called.
+
+**Every turn of the conversation**, from the agent and from the customer, is published
+to Kafka as a `conversation.turn` event. When the AI recognises a business intent in a
+turn (a promise to pay, a dispute), it also publishes a **business event** for it.
 
 ```mermaid
 sequenceDiagram
-    participant C as Customer
+    participant C as Customer (Maria)
     participant V as AI voice agent
     participant K as Kafka
-    V->>C: "Hi Maria, this is an automated assistant from Acme Bank about your auto loan."
     V->>K: call.started
+    V->>C: "Hi Maria, this is an automated assistant from Acme Bank about your auto loan."
+    V->>K: turn 1 (agent)
     V->>C: "This is an attempt to collect a debt..." (required disclosure)
-    V->>K: disclosure.given
+    V->>K: turn 2 (agent)
     V->>C: "Your payment of $450 is 30 days past due. Can you make a payment?"
+    V->>K: turn 3 (agent)
     C->>V: "I can pay $200 on Friday."
+    V->>K: turn 4 (customer) + promise_to_pay.created
     V->>C: "Thank you. I have noted $200 on Friday."
-    V->>K: promise_to_pay.created ($200, Friday)
+    V->>K: turn 5 (agent)
     C->>V: "Actually, I dispute this debt."
+    V->>K: turn 6 (customer) + dispute.raised
     V->>C: "Understood. I have recorded your dispute and will stop collection on it."
-    V->>K: dispute.raised
-    V->>C: "Thank you, goodbye."
+    V->>K: turn 7 (agent)
     V->>K: call.ended
 ```
 
