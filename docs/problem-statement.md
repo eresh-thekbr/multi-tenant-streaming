@@ -102,93 +102,7 @@ sequenceDiagram
     V->>K: call.ended
 ```
 
-## 3. The problem
-
-### 3.1 The story in four steps
-
-1. **9:00 AM** The credit card team starts a campaign that calls 5,000 customers.
-   Their calls send **thousands of events** into Kafka.
-2. **9:01 AM** On a different call, auto loan customer **John** says:
-   *"I filed for bankruptcy. Stop calling me."* The agent sends that event to Kafka.
-3. Kafka hands events to the processor **one at a time, in arrival order**.
-   John's event is **behind 2,000 credit card events**. At 150 ms each, it waits
-   **about 5 minutes**.
-4. **9:03 AM** The dialer does not know about the bankruptcy yet, so it **calls John
-   again**. Contacting a customer after a bankruptcy filing is a **compliance violation**.
-
-**The auto loan team did nothing wrong.** Another product line's traffic delayed its
-urgent event. This is the **noisy-neighbor problem**: in a shared system, one tenant's
-load hurts another tenant.
-
-### 3.2 Picture: the problem (one shared queue)
-
-All product lines put their events in **one queue**, handled **one at a time, first come,
-first served**.
-
-```mermaid
-flowchart TB
-    subgraph Q["ONE SHARED QUEUE: one worker, one event at a time, top to bottom"]
-        direction TB
-        q1["1. Credit card event"]
-        q2["2. Credit card event"]
-        q3["... 997 more credit card events ..."]
-        q4["1,000. Credit card event"]
-        q5["1,001. AUTO LOAN customer: 'Stop calling me'<br/><b>URGENT</b>"]
-        q1 --> q2 --> q3 --> q4 --> q5
-    end
-    q5 --> L["Urgent event handled after <b>about 5 minutes</b><br/><b>TOO LATE</b>"]
-    style q5 fill:#ffe0e0,stroke:#c00,color:#000
-    style L fill:#ffe0e0,stroke:#c00,color:#000
-```
-
-**Problem:** the auto loan event is urgent, but it waits behind 1,000 credit card events.
-
-### 3.3 Picture: the fix (one queue per product line)
-
-Each product line gets **its own queue and its own worker**.
-
-```mermaid
-flowchart TB
-    subgraph A["CREDIT CARD QUEUE"]
-        direction TB
-        a1["1. Credit card event"] --> a2["... 999 more credit card events ..."]
-    end
-    subgraph B["AUTO LOAN QUEUE"]
-        direction TB
-        b1["1. AUTO LOAN customer: 'Stop calling me'<br/><b>URGENT</b>"]
-    end
-    a2 --> AW["Credit card worker<br/>busy for 5 minutes<br/>(only credit card waits)"]
-    b1 --> BW["Auto loan worker<br/>handles it <b>immediately</b><br/><b>ON TIME</b>"]
-    style b1 fill:#e0f5e0,stroke:#080,color:#000
-    style BW fill:#e0f5e0,stroke:#080,color:#000
-```
-
-**Fix:** a busy product line only slows down itself. Urgent events from other product
-lines are never stuck behind it.
-
-### 3.4 Why we cannot simply add more workers to the shared line
-
-More workers in parallel would remove the wait, but **one customer's events could
-finish in the wrong order**. Customer **Maria** says two things on one call:
-
-| Step | What Maria said | Event | With random parallel workers |
-|---|---|---|---|
-| 1 | "I can pay $200 on Friday." | `promise_to_pay.created` | Worker 1 picks it up but is slow |
-| 2 | "Actually, I dispute this debt." | `dispute.raised` | Worker 2 finishes first: account = **DISPUTED** |
-| 3 | | | Worker 1 finishes last: account = **PROMISE TO PAY** (overwrites the dispute) |
-
-**Result:** the account says "promise to pay" and the bank keeps collecting a debt the
-customer disputed. Maria's events must be processed **in the order she said them**.
-
-### 3.5 Problem statement
-
-> Several product lines share one event pipeline. The platform must guarantee:
->
-> 1. **Isolation:** one product line's traffic never delays another product line's urgent events (John).
-> 2. **Ordering:** each customer's events are processed in the order they happened (Maria).
-> 3. **No duplicates:** an event delivered twice is applied only once (no double payment plans).
-
-## 4. Target design
+## 3. Target design
 
 ```mermaid
 flowchart LR
@@ -235,7 +149,7 @@ flowchart LR
 | No duplicate promises or payments | Idempotency check on `event_id`, recorded only **after** successful processing |
 | A bad event does not stop the platform | Retry a few times, then move to a dead-letter queue |
 
-## 5. What the demo will prove
+## 4. What the demo will prove
 
 | Scenario | Naive (one shared line) | Tenant-fair design |
 |---|---|---|
@@ -244,7 +158,7 @@ flowchart LR
 | Same event delivered twice | Applied twice | Applied once |
 | One event keeps failing | Pipeline stalls | Event goes to dead-letter queue, others continue |
 
-## 6. Out of scope for this proof of concept
+## 5. Out of scope for this proof of concept
 
 - The voice agent itself (speech recognition, LLM, telephony) is simulated.
 - Storage is in memory; production would use a database and Redis for idempotency keys.
